@@ -48,8 +48,8 @@ export function CategoryDonut({ data, total }: CategoryDonutProps) {
         </PieChart>
       </ResponsiveContainer>
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-faint">
-          Month-to-date
+        <span className="text-[9px] font-medium uppercase tracking-[0.14em] text-faint">
+          This month
         </span>
         <span className="mt-1 font-display text-2xl tabular text-foreground">
           {formatCurrency(total)}

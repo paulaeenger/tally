@@ -39,11 +39,18 @@ export default async function DashboardPage() {
 
   const recent = transactions.slice(0, 6);
 
+  const hour = new Date().getHours();
+  const greeting =
+    hour < 5 ? 'Good evening' :
+    hour < 12 ? 'Good morning' :
+    hour < 17 ? 'Good afternoon' :
+    'Good evening';
+
   return (
     <div className="stagger space-y-6">
       <PageHeader
         eyebrow="Overview"
-        title="Good morning"
+        title={greeting}
         description="A considered view of your money this month."
       />
 

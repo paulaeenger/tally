@@ -78,6 +78,48 @@ export const sampleTransactions: Transaction[] = [
   mk('t20', 'a1', 'c1', 'expense', 71.33, 'Groceries', 'Trader Joe\'s', 25),
 ];
 
+// Synthesize 5 months of prior history so the cashflow chart reads as a trend,
+// not a single spike. Each month has payroll (~$4.85k) and ~$3.2-3.8k of spending.
+const historicalMonths = [
+  { daysBack: 45, incomeAmt: 4850, spendBase: 3350 },   // ~1.5 months ago
+  { daysBack: 75, incomeAmt: 4850, spendBase: 3580 },   // ~2.5 months ago
+  { daysBack: 105, incomeAmt: 4850, spendBase: 3210 },  // ~3.5 months ago
+  { daysBack: 135, incomeAmt: 4850, spendBase: 3720 },  // ~4.5 months ago
+  { daysBack: 165, incomeAmt: 4850, spendBase: 3410 },  // ~5.5 months ago
+];
+
+historicalMonths.forEach((m, idx) => {
+  const monthKey = `h${idx}`;
+  // Payroll
+  sampleTransactions.push(
+    mk(`${monthKey}-inc`, 'a1', 'c8', 'income', m.incomeAmt, 'Payroll', 'Acme Corp', m.daysBack)
+  );
+  // Split spending across categories to look realistic
+  const spendSplit = [
+    { cat: 'c1', acct: 'a1', pct: 0.22, merch: 'Whole Foods', desc: 'Groceries' },
+    { cat: 'c2', acct: 'a3', pct: 0.15, merch: 'Various', desc: 'Dining' },
+    { cat: 'c3', acct: 'a1', pct: 0.08, merch: 'Shell', desc: 'Transport' },
+    { cat: 'c4', acct: 'a3', pct: 0.16, merch: 'Various', desc: 'Shopping' },
+    { cat: 'c5', acct: 'a1', pct: 0.21, merch: 'ConEd', desc: 'Utilities' },
+    { cat: 'c6', acct: 'a1', pct: 0.06, merch: 'Netflix', desc: 'Entertainment' },
+    { cat: 'c7', acct: 'a1', pct: 0.12, merch: 'CVS', desc: 'Health' },
+  ];
+  spendSplit.forEach((s, sIdx) => {
+    sampleTransactions.push(
+      mk(
+        `${monthKey}-s${sIdx}`,
+        s.acct,
+        s.cat,
+        'expense',
+        Math.round(m.spendBase * s.pct * 100) / 100,
+        s.desc,
+        s.merch,
+        m.daysBack + sIdx
+      )
+    );
+  });
+});
+
 export const sampleBudgets: Budget[] = [
   { id: 'b1', user_id: userId, category_id: 'c1', name: 'Groceries', amount: 500, period: 'monthly', created_at: daysAgo(30), updated_at: daysAgo(1), spent: 315.13, category: sampleCategories[0] },
   { id: 'b2', user_id: userId, category_id: 'c2', name: 'Dining', amount: 300, period: 'monthly', created_at: daysAgo(30), updated_at: daysAgo(1), spent: 211.85, category: sampleCategories[1] },
