@@ -22,9 +22,22 @@ export function StatCard({ label, value, change, trend, footnote, className }: S
           : 'text-negative';
 
   return (
-    <div className={cn('card p-5 sm:p-6 min-w-0', className)}>
+    <div className={cn('card p-5 sm:p-6 min-w-0 overflow-hidden', className)}>
       <p className="label truncate">{label}</p>
-      <p className="mt-2 font-display font-normal tabular text-foreground truncate text-[clamp(1.25rem,2.6vw,1.875rem)] leading-tight">
+      {/*
+        Font size scales fluidly with the card's available width.
+        min 1.125rem (18px) is enough to fit even long values like "$12,500.00".
+        Using white-space: nowrap + overflow: hidden lets it stay on one line
+        without the "…" truncation ellipsis.
+      */}
+      <p
+        className="mt-2 font-display font-normal tabular text-foreground leading-tight"
+        style={{
+          fontSize: 'clamp(1.125rem, 2.2vw, 1.875rem)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+        }}
+      >
         {value}
       </p>
       {(change || footnote) && (
