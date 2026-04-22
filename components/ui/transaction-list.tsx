@@ -3,18 +3,20 @@
 import { useMemo, useState } from 'react';
 import { format, parseISO } from 'date-fns';
 import { Search } from 'lucide-react';
-import { TransactionRow } from '@/components/ui/transaction-row';
+import { EditableTransactionRow } from '@/components/ui/transaction-actions';
 import { EmptyState } from '@/components/ui/empty-state';
 import { cn, formatCurrency } from '@/lib/utils/cn';
-import type { Transaction } from '@/lib/data/types';
+import type { Account, Category, Transaction } from '@/lib/data/types';
 
 type Filter = 'all' | 'income' | 'expense' | 'transfer';
 
 interface Props {
   transactions: Transaction[];
+  accounts: Pick<Account, 'id' | 'name' | 'type'>[];
+  categories: Pick<Category, 'id' | 'name' | 'color'>[];
 }
 
-export function TransactionList({ transactions }: Props) {
+export function TransactionList({ transactions, accounts, categories }: Props) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
 
@@ -121,7 +123,12 @@ export function TransactionList({ transactions }: Props) {
               </div>
               <div className="px-5">
                 {txs.map((tx) => (
-                  <TransactionRow key={tx.id} tx={tx} />
+                  <EditableTransactionRow
+                    key={tx.id}
+                    tx={tx}
+                    accounts={accounts}
+                    categories={categories}
+                  />
                 ))}
               </div>
             </div>
