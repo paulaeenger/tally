@@ -11,6 +11,10 @@ import { formatCurrency, formatPercent } from '@/lib/utils/cn';
 import Link from 'next/link';
 import { ArrowRight, Wallet, ArrowLeftRight } from 'lucide-react';
 
+// This page renders server-side on each request and should not be cached
+// across requests — user data changes and should be reflected immediately.
+export const dynamic = 'force-dynamic';
+
 export default async function DashboardPage() {
   const [accounts, transactions, budgets, goals] = await Promise.all([
     getAccounts(),
@@ -47,13 +51,6 @@ export default async function DashboardPage() {
 
   const recent = transactions.slice(0, 6);
 
-  const hour = new Date().getHours();
-  const greeting =
-    hour < 5 ? 'Good evening' :
-    hour < 12 ? 'Good morning' :
-    hour < 17 ? 'Good afternoon' :
-    'Good evening';
-
   // Detect the "just signed up, no data yet" state for a friendlier first experience
   const isEmpty =
     accounts.length === 0 &&
@@ -66,8 +63,8 @@ export default async function DashboardPage() {
       <div className="stagger space-y-6">
         <PageHeader
           eyebrow="Overview"
-          title={greeting}
-          description="Let's get Tally set up with your real information."
+          title="Welcome to Tally"
+          description="Let's get set up with your real information."
         />
 
         <div className="card p-8 sm:p-12">
@@ -75,7 +72,7 @@ export default async function DashboardPage() {
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-subtle text-muted">
               <Wallet size={20} strokeWidth={1.5} />
             </div>
-            <h2 className="font-display text-2xl text-foreground">Welcome to Tally.</h2>
+            <h2 className="font-display text-2xl text-foreground">A fresh page.</h2>
             <p className="mt-2 text-sm text-muted">
               Start by adding an account — checking, savings, credit, or investment.
               Once you have accounts, you can log transactions, set budgets, and track
@@ -95,7 +92,7 @@ export default async function DashboardPage() {
         </div>
 
         <p className="text-center text-xs text-faint">
-          Your data stays private — visible only to you on your Tally.
+          Your data stays private — visible only to you.
         </p>
       </div>
     );
@@ -108,7 +105,7 @@ export default async function DashboardPage() {
     <div className="stagger space-y-6">
       <PageHeader
         eyebrow="Overview"
-        title={greeting}
+        title="Your Tally"
         description="A considered view of your money this month."
       />
 
