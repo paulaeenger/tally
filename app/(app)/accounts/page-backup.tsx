@@ -1,13 +1,10 @@
-import { Wallet, Landmark, CreditCard, TrendingUp, Banknote, HandCoins } from 'lucide-react';
+import { Plus, Wallet, Landmark, CreditCard, TrendingUp, Banknote, HandCoins } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { StatCard } from '@/components/ui/stat-card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { AddAccountButton, EditAccountButton } from '@/components/ui/account-actions';
 import { getAccounts } from '@/lib/data/queries';
 import { cn, formatCurrency } from '@/lib/utils/cn';
 import type { AccountType } from '@/lib/data/types';
-
-export const dynamic = 'force-dynamic';
 
 const typeMeta: Record<AccountType, { label: string; icon: React.ElementType }> = {
   checking: { label: 'Checking', icon: Wallet },
@@ -41,7 +38,12 @@ export default async function AccountsPage() {
         eyebrow="Holdings"
         title="Accounts"
         description="Assets and liabilities across every institution."
-        actions={<AddAccountButton />}
+        actions={
+          <button className="btn-primary">
+            <Plus size={15} strokeWidth={2} />
+            Link account
+          </button>
+        }
       />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4">
@@ -58,9 +60,8 @@ export default async function AccountsPage() {
       {accounts.length === 0 ? (
         <EmptyState
           icon={Wallet}
-          title="No accounts yet"
-          description="Add your first account to start tracking. Checking, savings, credit, investment — any combination."
-          action={<AddAccountButton label="Add your first account" />}
+          title="No accounts linked"
+          description="Add checking, savings, credit, or investment accounts to get started."
         />
       ) : (
         <div className="space-y-6">
@@ -86,9 +87,9 @@ export default async function AccountsPage() {
                     return (
                       <div
                         key={a.id}
-                        className="group flex items-center justify-between gap-3 px-5 py-4 transition-colors hover:bg-subtle/50"
+                        className="flex items-center justify-between gap-4 px-5 py-4 transition-colors hover:bg-subtle/50"
                       >
-                        <div className="min-w-0 flex-1">
+                        <div className="min-w-0">
                           <p className="truncate font-medium text-foreground">{a.name}</p>
                           <p className="text-xs text-muted">{a.institution ?? '—'}</p>
                         </div>
@@ -106,7 +107,6 @@ export default async function AccountsPage() {
                             {a.currency}
                           </p>
                         </div>
-                        <EditAccountButton account={a} />
                       </div>
                     );
                   })}
