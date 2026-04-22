@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
 
@@ -14,6 +15,10 @@ interface ModalProps {
 }
 
 export function Modal({ open, onClose, title, description, children, className }: ModalProps) {
+  // Avoid SSR/hydration issues — only render the portal after mount.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   // Close on Escape
   useEffect(() => {
     if (!open) return;
@@ -34,9 +39,9 @@ export function Modal({ open, onClose, title, description, children, className }
     };
   }, [open]);
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
 
-  return (
+  const content = (
     <div
       role="dialog"
       aria-modal="true"
@@ -102,4 +107,8 @@ export function Modal({ open, onClose, title, description, children, className }
       `}</style>
     </div>
   );
+
+  // Portal to document.body so the modal escapes any ancestor with
+  // transform/filter/contain that would otherwise trap fixed positioning.
+  return createPortal(content, document.body);
 }
