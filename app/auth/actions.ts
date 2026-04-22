@@ -50,6 +50,36 @@ export async function signUp(formData: FormData) {
   redirect('/login?message=Check+your+email+to+confirm');
 }
 
+export async function signInWithGoogle() {
+  if (!isSupabaseConfigured()) {
+    redirect('/dashboard');
+  }
+
+  const supabase = createClient();
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || '';
+
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: `${siteUrl}/auth/callback`,
+      queryParams: {
+        access_type: 'offline',
+        prompt: 'consent',
+      },
+    },
+  });
+
+  if (error) {
+    redirect(`/login?error=${encodeURIComponent(error.message)}`);
+  }
+
+  if (data?.url) {
+    redirect(data.url);
+  }
+
+  redirect('/login?error=Could+not+initiate+Google+sign-in');
+}
+
 export async function signOut() {
   if (!isSupabaseConfigured()) {
     redirect('/login');
