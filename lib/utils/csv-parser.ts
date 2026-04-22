@@ -1,6 +1,6 @@
 // Lightweight CSV parser. Handles quoted fields, escaped quotes, and
-// auto-detects common bank CSV shapes (Chase, Amex, Wells Fargo, BoA,
-// generic date/description/amount).
+// auto-detects common bank CSV shapes including those with metadata rows
+// above the header.
 
 export interface ParsedRow {
   occurred_at: string; // ISO
@@ -61,20 +61,18 @@ function splitLines(text: string): string[] {
 }
 
 // ----------------------------------------------------------------
-// Date parsing — accepts MM/DD/YYYY, YYYY-MM-DD, DD/MM/YYYY (less common)
+// Date parsing
 // ----------------------------------------------------------------
 function parseDate(raw: string): Date | null {
   if (!raw) return null;
   const s = raw.trim().replace(/"/g, '');
 
-  // ISO like 2025-04-21 or 2025-04-21T12:00:00
   const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (isoMatch) {
     const d = new Date(s);
     if (!isNaN(d.getTime())) return d;
   }
 
-  // MM/DD/YYYY or M/D/YY (US format, most common bank CSV)
   const usMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
   if (usMatch) {
     const mm = Number(usMatch[1]);
@@ -85,21 +83,20 @@ function parseDate(raw: string): Date | null {
     if (!isNaN(d.getTime())) return d;
   }
 
-  // Fallback — native Date parsing
   const d = new Date(s);
   if (!isNaN(d.getTime())) return d;
   return null;
 }
 
 // ----------------------------------------------------------------
-// Amount parsing — handles "$1,234.56", "(123.45)" for negatives, "-123.45"
+// Amount parsing
 // ----------------------------------------------------------------
 function parseAmount(raw: string): number | null {
   if (!raw) return null;
   let s = raw.trim().replace(/["$\s]/g, '').replace(/,/g, '');
+  if (!s) return null;
   let negative = false;
 
-  // (123.45) format (accounting parens for negative)
   if (s.startsWith('(') && s.endsWith(')')) {
     negative = true;
     s = s.slice(1, -1);
@@ -117,9 +114,6 @@ function parseAmount(raw: string): number | null {
   return negative ? -n : n;
 }
 
-// ----------------------------------------------------------------
-// Find the right column for each concept using heuristics
-// ----------------------------------------------------------------
 function findColumn(headers: string[], patterns: RegExp[]): number {
   for (let i = 0; i < headers.length; i++) {
     const h = headers[i].toLowerCase();
@@ -129,7 +123,32 @@ function findColumn(headers: string[], patterns: RegExp[]): number {
 }
 
 // ----------------------------------------------------------------
-// Main parser. Detects format from headers and returns normalized rows.
+// Header detection — scans the first ~10 rows looking for the first one
+// that "looks like" a real header row. A real header row contains at
+// least one recognizable finance column (date + amount-ish, or debit/credit).
+// ----------------------------------------------------------------
+function findHeaderRow(lines: string[]): { headerIdx: number; headers: string[] } | null {
+  const maxScan = Math.min(lines.length, 15);
+  for (let i = 0; i < maxScan; i++) {
+    const cells = parseCSVLine(lines[i]);
+    const lower = cells.map((c) => c.toLowerCase());
+
+    const hasDate = lower.some((h) => /\bdate\b|posted|^when/i.test(h));
+    const hasAmount = lower.some((h) => /\bamount\b|debit|credit|withdrawal|deposit/i.test(h));
+    const hasDescription = lower.some((h) =>
+      /description|merchant|payee|name|memo/i.test(h)
+    );
+
+    // Strict check: at least a date column + (amount OR debit/credit) + description
+    if (hasDate && hasAmount && hasDescription) {
+      return { headerIdx: i, headers: cells };
+    }
+  }
+  return null;
+}
+
+// ----------------------------------------------------------------
+// Main parser
 // ----------------------------------------------------------------
 export function parseCSV(text: string): ParseResult {
   const lines = splitLines(text);
@@ -142,21 +161,33 @@ export function parseCSV(text: string): ParseResult {
     };
   }
 
-  const headers = parseCSVLine(lines[0]).map((h) => h.trim());
+  const headerResult = findHeaderRow(lines);
+  if (!headerResult) {
+    return {
+      rows: [],
+      skipped: lines.map((l) => ({ row: l, reason: 'No recognizable header row' })),
+      detectedFormat: 'Could not detect CSV format',
+      rawHeaders: parseCSVLine(lines[0]),
+    };
+  }
+
+  const { headerIdx, headers } = headerResult;
   const lower = headers.map((h) => h.toLowerCase());
 
-  // Column discovery
-  const dateCol = findColumn(headers, [/date/i, /posted/i, /^when/i]);
-  const descCol = findColumn(headers, [/description/i, /merchant/i, /payee/i, /name/i]);
-  const amountCol = findColumn(headers, [/^amount$/i, /\bamount\b/i]);
-  const debitCol = findColumn(headers, [/debit/i, /withdrawal/i]);
-  const creditCol = findColumn(headers, [/credit/i, /deposit/i]);
+  const dateCol = findColumn(headers, [/^date$/i, /^posted date$/i, /^transaction date$/i, /date/i]);
+  const descCol = findColumn(headers, [/description/i, /merchant/i, /payee/i, /^name$/i]);
+  const memoCol = findColumn(headers, [/memo/i]);
+  const amountCol = headers.findIndex((h) => h.toLowerCase() === 'amount');
+  const debitCol = findColumn(headers, [/^debit$/i, /withdrawal/i]);
+  const creditCol = findColumn(headers, [/^credit$/i, /deposit/i]);
 
-  // Detect format name
+  // Format detection — for display only, doesn't affect parsing
   let detectedFormat = 'Generic CSV';
   if (lower.some((h) => h.includes('transaction date')) && lower.some((h) => h.includes('post date'))) {
     detectedFormat = 'Chase';
-  } else if (lower.some((h) => h === 'date') && debitCol !== -1 && creditCol !== -1) {
+  } else if (debitCol !== -1 && creditCol !== -1 && memoCol !== -1) {
+    detectedFormat = 'Credit Union / Bank (Debit + Credit + Memo)';
+  } else if (debitCol !== -1 && creditCol !== -1) {
     detectedFormat = 'Wells Fargo / Bank of America';
   } else if (lower.some((h) => h.includes('trans. date')) || lower.some((h) => h.includes('amex'))) {
     detectedFormat = 'American Express';
@@ -167,11 +198,13 @@ export function parseCSV(text: string): ParseResult {
   const rows: ParsedRow[] = [];
   const skipped: { row: string; reason: string }[] = [];
 
-  for (let lineIdx = 1; lineIdx < lines.length; lineIdx++) {
+  for (let lineIdx = headerIdx + 1; lineIdx < lines.length; lineIdx++) {
     const rawLine = lines[lineIdx];
     const cells = parseCSVLine(rawLine);
 
-    // Date
+    // Skip empty/near-empty rows
+    if (cells.every((c) => c.trim().length === 0)) continue;
+
     const dateRaw = dateCol >= 0 ? cells[dateCol] : '';
     const date = parseDate(dateRaw);
     if (!date) {
@@ -179,22 +212,23 @@ export function parseCSV(text: string): ParseResult {
       continue;
     }
 
-    // Merchant / description
     const desc = descCol >= 0 ? cells[descCol] : '';
     if (!desc) {
       skipped.push({ row: rawLine, reason: 'Missing description' });
       continue;
     }
 
-    // Amount — prefer unified "Amount" column, else split debit/credit
+    // Amount resolution
     let amount: number | null = null;
     if (amountCol >= 0) {
       amount = parseAmount(cells[amountCol]);
     } else if (debitCol >= 0 || creditCol >= 0) {
-      const debit = debitCol >= 0 ? parseAmount(cells[debitCol]) : null;
-      const credit = creditCol >= 0 ? parseAmount(cells[creditCol]) : null;
-      if (debit && debit !== 0) amount = -Math.abs(debit); // debit = expense
-      else if (credit && credit !== 0) amount = Math.abs(credit); // credit = income
+      const debitStr = debitCol >= 0 ? cells[debitCol] : '';
+      const creditStr = creditCol >= 0 ? cells[creditCol] : '';
+      const debit = parseAmount(debitStr);
+      const credit = parseAmount(creditStr);
+      if (debit !== null && debit !== 0) amount = -Math.abs(debit);
+      else if (credit !== null && credit !== 0) amount = Math.abs(credit);
     }
 
     if (amount === null || amount === 0) {
@@ -215,27 +249,57 @@ export function parseCSV(text: string): ParseResult {
 }
 
 // ----------------------------------------------------------------
-// Clean up merchant strings — strip trailing refs, store numbers, etc.
-// "IHOP #2247 SALT LAKE C UT" → "IHOP"
-// "AMAZON.COM*HM39K8AB2 AMZN.COM/BILL WA" → "Amazon"
+// Merchant cleaner — aggressively strips bank noise.
+// Examples handled:
+//   "PARAMOUNT ACCEPT VASAFIT REF # 026099003202241 PARAMOUNT ACCEPT87-0366091VASAFIT PPD64181143347WTT Paul Enger REF # 26099003202241 3202241 (PARAMOUNT ACCEPT VASAFIT WTT Paul Enger)"
+//   → "Paramount Accept Vasafit"
+//   "IHOP #2247 SALT LAKE C UT" → "IHOP"
+//   "AMAZON.COM*HM39K8AB2 AMZN.COM/BILL WA" → "Amazon.com"
 // ----------------------------------------------------------------
 function cleanMerchant(raw: string): string {
   let s = raw.trim();
-  // Strip common noise patterns
-  s = s.replace(/\s+#\d+.*/i, ''); // "#2247 SALT LAKE..."
+
+  // 1. Take everything before the first "REF #" — that marker almost
+  //    always signals the start of bank metadata
+  s = s.split(/\s+REF\s*#/i)[0];
+
+  // 2. Remove trailing parenthetical transcriptions: "... (XYZ)"
+  s = s.replace(/\s*\([^)]*\)\s*$/, '');
+
+  // 3. Strip common noise patterns
+  s = s.replace(/\s+#\d+.*/, ''); // "#2247 SALT LAKE..."
   s = s.replace(/\s+\*[A-Z0-9]{6,}.*/i, ''); // "*HM39K8AB2..."
-  s = s.replace(/\s+[A-Z]{2}\s*$/i, ''); // trailing state code "UT"
+  s = s.replace(/\s+\d{5,}.*/, ''); // long digit sequences like routing/ID numbers
+  s = s.replace(/\s+PPD\d+.*/i, ''); // "PPD64181143347..."
+  s = s.replace(/\s+WEB\d+.*/i, ''); // "WEB17261435383..."
+  s = s.replace(/\s+\d{2}-\d{7}.*/, ''); // EIN-style codes "87-0366091..."
+  s = s.replace(/\s+[A-Z]{2,3}\d+.*/, ''); // "PPD123..", "ACH123.."
+
+  // 4. Collapse whitespace
   s = s.replace(/\s{2,}/g, ' ').trim();
-  s = s.replace(/\s+\d{5}$/, ''); // trailing zip
-  // Title-case obvious shouting
+
+  // 5. Trailing state code ("UT") or zip ("84101") if still present
+  s = s.replace(/\s+[A-Z]{2}\s*$/, '');
+  s = s.replace(/\s+\d{5}(-\d{4})?$/, '');
+
+  // 6. Limit length — anything over ~40 chars is still noise
+  if (s.length > 40) {
+    s = s.slice(0, 40).trim();
+  }
+
+  // 7. Title-case ALL CAPS strings, but preserve common acronyms
   if (s === s.toUpperCase() && s.length > 3) {
     s = s
       .toLowerCase()
       .replace(/\b\w/g, (c) => c.toUpperCase())
-      // Keep known all-caps acronyms
       .replace(/\bIhop\b/g, 'IHOP')
       .replace(/\bUsps\b/g, 'USPS')
-      .replace(/\bAtm\b/g, 'ATM');
+      .replace(/\bUps\b/g, 'UPS')
+      .replace(/\bAtm\b/g, 'ATM')
+      .replace(/\bAch\b/g, 'ACH')
+      .replace(/\bAmzn\b/g, 'Amazon')
+      .replace(/\bUsaa\b/g, 'USAA');
   }
-  return s;
+
+  return s || raw.slice(0, 40);
 }
