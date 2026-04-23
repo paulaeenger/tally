@@ -1,12 +1,15 @@
+// Target path in your repo: components/ui/csv-import-modal.tsx (REPLACE existing file)
+
 'use client';
 
-import { useMemo, useRef, useState, useTransition } from 'react';
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Upload, FileText, Loader2, AlertCircle, Check } from 'lucide-react';
+import { Upload, FileText, Loader2, AlertCircle, Check, AlertTriangle } from 'lucide-react';
 import { format } from 'date-fns';
 import { Modal } from '@/components/ui/modal';
-import { parseCSV, type ParsedRow } from '@/lib/utils/csv-parser';
+import { parseCSV, computeFingerprint, type ParsedRow } from '@/lib/utils/csv-parser';
 import { bulkImportTransactions } from '@/app/actions/transactions';
+import { checkForDuplicates } from '@/app/actions/transactions-check';
 import type { Account, Category } from '@/lib/data/types';
 import { cn, formatCurrency } from '@/lib/utils/cn';
 
@@ -19,11 +22,17 @@ interface ImportModalProps {
   categories: Pick<Category, 'id' | 'name' | 'color'>[];
 }
 
+interface PreviewRow extends ParsedRow {
+  isDuplicate: boolean;
+  dupReason: 'external_id' | 'fingerprint' | null;
+}
+
 export function CsvImportModal({ open, onClose, accounts, categories }: ImportModalProps) {
   const router = useRouter();
   const [stage, setStage] = useState<Stage>('upload');
   const [fileName, setFileName] = useState<string>('');
   const [parsed, setParsed] = useState<ParsedRow[]>([]);
+  const [preview, setPreview] = useState<PreviewRow[]>([]);
   const [skipped, setSkipped] = useState<{ row: string; reason: string }[]>([]);
   const [detectedFormat, setDetectedFormat] = useState<string>('');
   const [accountId, setAccountId] = useState<string>(accounts[0]?.id ?? '');
@@ -31,7 +40,11 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
   const [excludedRows, setExcludedRows] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const [importedCount, setImportedCount] = useState(0);
+  const [isCheckingDupes, setIsCheckingDupes] = useState(false);
+  const [importResult, setImportResult] = useState<{ imported: number; skipped: number }>({
+    imported: 0,
+    skipped: 0,
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -39,11 +52,12 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
     setStage('upload');
     setFileName('');
     setParsed([]);
+    setPreview([]);
     setSkipped([]);
     setDetectedFormat('');
     setExcludedRows(new Set());
     setError(null);
-    setImportedCount(0);
+    setImportResult({ imported: 0, skipped: 0 });
   }
 
   function handleClose() {
@@ -74,6 +88,85 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
     setStage('preview');
   }
 
+  // When the account or parsed rows change, recompute fingerprints and
+  // check the DB for matches. The DB unique indexes are the real safety
+  // net — this is just a UX nicety that pre-flags dupes in the preview.
+  useEffect(() => {
+    if (parsed.length === 0 || !accountId) {
+      setPreview([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      setIsCheckingDupes(true);
+
+      const enriched: PreviewRow[] = parsed.map((r) => ({
+        ...r,
+        fingerprint: computeFingerprint({
+          accountId,
+          occurredAt: r.occurred_at,
+          amount: r.amount,
+          merchant: r.merchant,
+          type: r.type,
+        }),
+        isDuplicate: false,
+        dupReason: null,
+      }));
+
+      const dates = parsed.map((r) => new Date(r.occurred_at).getTime());
+      const fromDate = new Date(Math.min(...dates)).toISOString();
+      const toDate = new Date(Math.max(...dates) + 24 * 60 * 60 * 1000).toISOString();
+
+      const externalIds = enriched
+        .map((r) => r.external_id)
+        .filter((id): id is string => !!id);
+      const fingerprints = enriched.map((r) => r.fingerprint);
+
+      try {
+        const existing = await checkForDuplicates({
+          accountId,
+          fromDate,
+          toDate,
+          externalIds,
+          fingerprints,
+        });
+
+        if (cancelled) return;
+
+        const flagged: PreviewRow[] = enriched.map((r) => {
+          if (r.external_id && existing.externalIds.includes(r.external_id)) {
+            return { ...r, isDuplicate: true, dupReason: 'external_id' };
+          }
+          if (existing.fingerprints.includes(r.fingerprint)) {
+            return { ...r, isDuplicate: true, dupReason: 'fingerprint' };
+          }
+          return r;
+        });
+
+        setPreview(flagged);
+
+        const newExcluded = new Set<number>();
+        flagged.forEach((r, i) => {
+          if (r.isDuplicate) newExcluded.add(i);
+        });
+        setExcludedRows(newExcluded);
+      } catch (err) {
+        if (!cancelled) {
+          setPreview(enriched);
+          setExcludedRows(new Set());
+        }
+      } finally {
+        if (!cancelled) setIsCheckingDupes(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [parsed, accountId]);
+
   function toggleRow(idx: number) {
     setExcludedRows((prev) => {
       const next = new Set(prev);
@@ -84,8 +177,13 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
   }
 
   const includedRows = useMemo(
-    () => parsed.filter((_, i) => !excludedRows.has(i)),
-    [parsed, excludedRows]
+    () => preview.filter((_, i) => !excludedRows.has(i)),
+    [preview, excludedRows]
+  );
+
+  const duplicateCount = useMemo(
+    () => preview.filter((r) => r.isDuplicate).length,
+    [preview]
   );
 
   const summary = useMemo(() => {
@@ -118,6 +216,7 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
           type: r.type,
           account_id: accountId,
           category_id: defaultCategoryId || null,
+          external_id: r.external_id,
           notes: null,
         }))
       );
@@ -125,7 +224,7 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
         setError(result.error);
         return;
       }
-      setImportedCount(result.imported);
+      setImportResult({ imported: result.imported, skipped: result.skipped });
       setStage('done');
       router.refresh();
     });
@@ -155,7 +254,7 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
       onClose={handleClose}
       title={
         stage === 'upload' ? 'Import transactions' :
-        stage === 'preview' ? 'Review &amp; import' :
+        stage === 'preview' ? 'Review & import' :
         'Import complete'
       }
       description={
@@ -213,7 +312,8 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
               <li>Any CSV with Date, Description, and Amount columns</li>
             </ul>
             <p className="mt-3 text-faint">
-              Tip: download your statement as CSV from your bank's website.
+              Tip: we'll auto-skip duplicates if you re-import a file that overlaps a
+              previous one.
             </p>
           </div>
 
@@ -228,7 +328,6 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
 
       {stage === 'preview' && (
         <div className="space-y-4">
-          {/* Assignment controls */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="label mb-1.5 block">Import into account</label>
@@ -264,11 +363,10 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
             </div>
           </div>
 
-          {/* Summary pills */}
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="chip">
               <FileText size={11} strokeWidth={1.75} />
-              {summary.count} transactions
+              {summary.count} to import
             </span>
             {summary.income > 0 && (
               <span className="chip text-positive">
@@ -280,12 +378,23 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
                 −{formatCurrency(summary.expense)} expenses
               </span>
             )}
+            {duplicateCount > 0 && (
+              <span className="chip text-warning">
+                <AlertTriangle size={11} strokeWidth={1.75} />
+                {duplicateCount} likely duplicate{duplicateCount === 1 ? '' : 's'}
+              </span>
+            )}
             {skipped.length > 0 && (
-              <span className="chip text-warning">{skipped.length} skipped</span>
+              <span className="chip text-faint">{skipped.length} unparseable</span>
+            )}
+            {isCheckingDupes && (
+              <span className="chip text-muted">
+                <Loader2 size={11} className="animate-spin" strokeWidth={1.75} />
+                Checking for duplicates…
+              </span>
             )}
           </div>
 
-          {/* Transactions preview table */}
           <div className="max-h-80 overflow-y-auto rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface">
@@ -297,14 +406,15 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
                 </tr>
               </thead>
               <tbody>
-                {parsed.map((r, i) => {
+                {preview.map((r, i) => {
                   const excluded = excludedRows.has(i);
                   return (
                     <tr
                       key={i}
                       className={cn(
                         'border-b border-border/60 transition-opacity',
-                        excluded && 'opacity-40'
+                        excluded && 'opacity-40',
+                        r.isDuplicate && 'bg-warning/5'
                       )}
                     >
                       <td className="px-3 py-2">
@@ -319,7 +429,24 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
                       <td className="px-3 py-2 text-xs text-muted tabular">
                         {format(new Date(r.occurred_at), 'MMM d, yyyy')}
                       </td>
-                      <td className="px-3 py-2 truncate text-foreground">{r.merchant}</td>
+                      <td className="px-3 py-2 text-foreground">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate">{r.merchant}</span>
+                          {r.isDuplicate && (
+                            <span
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning"
+                              title={
+                                r.dupReason === 'external_id'
+                                  ? 'Same transaction ID already in your account'
+                                  : 'Same date, merchant, and amount as an existing transaction'
+                              }
+                            >
+                              <AlertTriangle size={10} strokeWidth={2} />
+                              Likely duplicate
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td
                         className={cn(
                           'px-3 py-2 text-right font-medium tabular',
@@ -335,6 +462,14 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
               </tbody>
             </table>
           </div>
+
+          {duplicateCount > 0 && (
+            <p className="text-xs text-muted">
+              Duplicates have been unchecked automatically. You can re-check any row
+              that's actually a new transaction — the import will still skip true
+              duplicates on the way into the database.
+            </p>
+          )}
 
           {error && (
             <div className="flex items-start gap-2 rounded-lg border border-negative/30 bg-negative/5 p-3 text-xs text-negative">
@@ -372,9 +507,16 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
           </div>
           <div>
             <p className="font-display text-2xl text-foreground">
-              {importedCount} transaction{importedCount === 1 ? '' : 's'} imported
+              {importResult.imported} transaction{importResult.imported === 1 ? '' : 's'} imported
             </p>
-            <p className="mt-1 text-sm text-muted">Head to the dashboard to see them.</p>
+            {importResult.skipped > 0 && (
+              <p className="mt-1 text-sm text-muted">
+                {importResult.skipped} duplicate{importResult.skipped === 1 ? '' : 's'} skipped automatically.
+              </p>
+            )}
+            {importResult.skipped === 0 && (
+              <p className="mt-1 text-sm text-muted">Head to the dashboard to see them.</p>
+            )}
           </div>
           <button onClick={handleClose} className="btn-primary">
             Done

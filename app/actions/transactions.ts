@@ -1,13 +1,11 @@
+// Target path in your repo: app/actions/transactions.ts (REPLACE existing file)
+
 'use server';
 
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import { isSupabaseConfigured } from '@/lib/data/queries';
 import type { TransactionType } from '@/lib/data/types';
-
-// ============================================================
-// Helpers
-// ============================================================
 
 async function getCurrentUserId() {
   if (!isSupabaseConfigured()) return null;
@@ -25,9 +23,10 @@ function revalidate() {
 }
 
 // ============================================================
-// Create
+// Create — idempotent thanks to the unique index on fingerprint.
+// Accidental double-clicks of "Add" will silently become a no-op
+// on the second call instead of creating a second row.
 // ============================================================
-
 export async function createTransaction(formData: FormData) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
@@ -51,25 +50,24 @@ export async function createTransaction(formData: FormData) {
     return { error: 'Amount must be greater than zero' };
   }
 
-  // Use merchant as description (the display field is merchant; description
-  // stays populated for the legacy data model and CSV imports)
-  const description = merchant;
-
   const occurredAtIso = occurredAt
     ? new Date(occurredAt).toISOString()
     : new Date().toISOString();
 
-  const { error } = await supabase.from('transactions').insert({
-    user_id: userId,
-    account_id: accountId,
-    category_id: categoryId,
-    type,
-    amount,
-    description,
-    merchant,
-    notes: notes || null,
-    occurred_at: occurredAtIso,
-  });
+  const { error } = await supabase.from('transactions').upsert(
+    {
+      user_id: userId,
+      account_id: accountId,
+      category_id: categoryId,
+      type,
+      amount,
+      description: merchant,
+      merchant,
+      notes: notes || null,
+      occurred_at: occurredAtIso,
+    },
+    { onConflict: 'user_id,fingerprint', ignoreDuplicates: true }
+  );
 
   if (error) return { error: error.message };
 
@@ -78,9 +76,10 @@ export async function createTransaction(formData: FormData) {
 }
 
 // ============================================================
-// Update
+// Update — if the user edits a row into matching another row's
+// fingerprint, Postgres rejects with code 23505. We translate to
+// a friendly message.
 // ============================================================
-
 export async function updateTransaction(formData: FormData) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
@@ -126,7 +125,15 @@ export async function updateTransaction(formData: FormData) {
     .eq('id', id)
     .eq('user_id', userId);
 
-  if (error) return { error: error.message };
+  if (error) {
+    if (error.code === '23505' || error.message.includes('fingerprint')) {
+      return {
+        error:
+          'A matching transaction already exists — adjust the amount, date, or merchant to make it distinct.',
+      };
+    }
+    return { error: error.message };
+  }
 
   revalidate();
   return { success: true };
@@ -135,7 +142,6 @@ export async function updateTransaction(formData: FormData) {
 // ============================================================
 // Delete
 // ============================================================
-
 export async function deleteTransaction(id: string) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
@@ -154,27 +160,28 @@ export async function deleteTransaction(id: string) {
 }
 
 // ============================================================
-// Bulk import (for CSV)
+// Bulk import — uses upsert with ignoreDuplicates so Postgres
+// silently skips conflicting rows and we can count skips.
 // ============================================================
-
 export interface ImportRow {
-  occurred_at: string; // ISO
+  occurred_at: string;
   merchant: string;
-  amount: number; // positive
+  amount: number;
   type: TransactionType;
   account_id: string;
   category_id: string | null;
+  external_id?: string | null;
   notes?: string | null;
 }
 
 export async function bulkImportTransactions(
   rows: ImportRow[]
-): Promise<{ imported: number; error?: string }> {
+): Promise<{ imported: number; skipped: number; error?: string }> {
   const userId = await getCurrentUserId();
-  if (!userId) return { imported: 0, error: 'Not signed in' };
-  if (rows.length === 0) return { imported: 0, error: 'No rows to import' };
+  if (!userId) return { imported: 0, skipped: 0, error: 'Not signed in' };
+  if (rows.length === 0) return { imported: 0, skipped: 0, error: 'No rows to import' };
   if (rows.length > 1000) {
-    return { imported: 0, error: 'Too many rows — limit is 1000 per import' };
+    return { imported: 0, skipped: 0, error: 'Too many rows — limit is 1000 per import' };
   }
 
   const supabase = createClient();
@@ -189,11 +196,43 @@ export async function bulkImportTransactions(
     merchant: r.merchant,
     notes: r.notes ?? null,
     occurred_at: r.occurred_at,
+    external_id: r.external_id ?? null,
   }));
 
-  const { error } = await supabase.from('transactions').insert(inserts);
-  if (error) return { imported: 0, error: error.message };
+  // Split into two batches so we can target the right conflict constraint.
+  // Mixing them in a single upsert call makes Supabase only resolve on one
+  // constraint, which misses half the dedup logic.
+  const withExternalId = inserts.filter((r) => r.external_id !== null);
+  const withoutExternalId = inserts.filter((r) => r.external_id === null);
+
+  let imported = 0;
+
+  if (withExternalId.length > 0) {
+    const { data, error } = await supabase
+      .from('transactions')
+      .upsert(withExternalId, {
+        onConflict: 'user_id,account_id,external_id',
+        ignoreDuplicates: true,
+      })
+      .select('id');
+    if (error) return { imported: 0, skipped: 0, error: error.message };
+    imported += data?.length ?? 0;
+  }
+
+  if (withoutExternalId.length > 0) {
+    const { data, error } = await supabase
+      .from('transactions')
+      .upsert(withoutExternalId, {
+        onConflict: 'user_id,fingerprint',
+        ignoreDuplicates: true,
+      })
+      .select('id');
+    if (error) return { imported: 0, skipped: 0, error: error.message };
+    imported += data?.length ?? 0;
+  }
+
+  const skipped = rows.length - imported;
 
   revalidate();
-  return { imported: rows.length };
+  return { imported, skipped };
 }
