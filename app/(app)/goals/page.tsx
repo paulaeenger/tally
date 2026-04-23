@@ -7,7 +7,7 @@ import { getGoals } from '@/lib/data/queries';
 import { cn, formatCurrency, formatPercent } from '@/lib/utils/cn';
 import type { Goal } from '@/lib/data/types';
 
-export const dynamic = 'force-dynamic';
+export const revalidate = 60;
 
 export default async function GoalsPage() {
   const goals = await getGoals();

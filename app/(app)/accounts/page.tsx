@@ -7,7 +7,7 @@ import { getAccounts } from '@/lib/data/queries';
 import { cn, formatCurrency } from '@/lib/utils/cn';
 import type { AccountType } from '@/lib/data/types';
 
-export const dynamic = 'force-dynamic';
+export const revalidate = 60;
 
 const typeMeta: Record<AccountType, { label: string; icon: React.ElementType }> = {
   checking: { label: 'Checking', icon: Wallet },

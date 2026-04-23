@@ -5,7 +5,7 @@ import { AddBudgetButton, EditableBudgetCard } from '@/components/ui/budget-acti
 import { getBudgets, getCategories } from '@/lib/data/queries';
 import { cn, formatCurrency, formatPercent } from '@/lib/utils/cn';
 
-export const dynamic = 'force-dynamic';
+export const revalidate = 60;
 
 export default async function BudgetsPage() {
   const [budgets, categories] = await Promise.all([getBudgets(), getCategories()]);

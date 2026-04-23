@@ -14,7 +14,7 @@ import { ArrowRight, Wallet, ArrowLeftRight } from 'lucide-react';
 
 // This page renders server-side on each request and should not be cached
 // across requests — user data changes and should be reflected immediately.
-export const dynamic = 'force-dynamic';
+export const revalidate = 60;
 
 export default async function DashboardPage() {
   const [accounts, transactions, budgets, goals] = await Promise.all([
