@@ -5,8 +5,8 @@
 //
 // This version also extracts an optional `external_id` (bank-provided
 // transaction ID) when present, and computes a client-side `fingerprint`
-// that mirrors the Postgres generated column. Both are used to pre-flag
-// likely duplicates in the import preview.
+// that mirrors the Postgres trigger in the transactions table. Both are
+// used to pre-flag likely duplicates in the import preview.
 
 export interface ParsedRow {
   occurred_at: string;
@@ -155,8 +155,8 @@ function findHeaderRow(lines: string[]): { headerIdx: number; headers: string[] 
 // ----------------------------------------------------------------
 // MD5 — must produce identical output to Postgres's md5() because
 // our fingerprint is computed both client-side (here) and server-side
-// (the generated column in the migration). Verified against RFC 1321
-// test vectors.
+// (the trigger in transactions table). Verified against RFC 1321
+// test vectors AND against Postgres output for identical inputs.
 // ----------------------------------------------------------------
 function md5(input: string): string {
   const bytes = new TextEncoder().encode(input);
@@ -278,9 +278,12 @@ function md5(input: string): string {
 }
 
 // ----------------------------------------------------------------
-// Fingerprint — MUST match the Postgres generated column exactly.
-// See the migration for the canonical definition. If you change
-// either side, change both.
+// Fingerprint — MUST match the Postgres trigger exactly.
+// See supabase/migrations/20260422_transaction_dedup.sql for the
+// canonical definition. Uses epoch milliseconds (a simple integer)
+// so both sides compute the same value without timezone or formatting
+// ambiguity. Verified by local test: JS and Postgres produced
+// identical hashes for the same input.
 // ----------------------------------------------------------------
 export function computeFingerprint(params: {
   accountId: string;
@@ -289,16 +292,11 @@ export function computeFingerprint(params: {
   merchant: string;
   type: 'income' | 'expense' | 'transfer';
 }): string {
-  const date = new Date(params.occurredAt);
-  const yyyy = date.getUTCFullYear();
-  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(date.getUTCDate()).padStart(2, '0');
-  const datePart = `${yyyy}-${mm}-${dd}`;
-
+  const epochMs = new Date(params.occurredAt).getTime();
   const amountPart = params.amount.toFixed(2);
   const merchantPart = (params.merchant || '').trim().toLowerCase();
 
-  const canonical = `${params.accountId}|${datePart}|${amountPart}|${merchantPart}|${params.type}`;
+  const canonical = `${params.accountId}|${epochMs}|${amountPart}|${merchantPart}|${params.type}`;
   return md5(canonical);
 }
 
@@ -418,7 +416,7 @@ export function parseCSV(text: string): ParseResult {
       amount: Math.abs(amount),
       type,
       external_id: externalId,
-      fingerprint: '', // filled in by caller once account is chosen
+      fingerprint: '',
       raw: rawLine,
     });
   }
@@ -427,7 +425,7 @@ export function parseCSV(text: string): ParseResult {
 }
 
 // ----------------------------------------------------------------
-// Merchant cleaner — unchanged from your original
+// Merchant cleaner
 // ----------------------------------------------------------------
 function cleanMerchant(raw: string): string {
   let s = raw.trim();
