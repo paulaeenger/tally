@@ -4,7 +4,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
-import { isSupabaseConfigured } from '@/lib/data/queries';
+import { isSupabaseConfigured, getCurrentHouseholdId } from '@/lib/data/queries';
 import type { TransactionType } from '@/lib/data/types';
 
 async function getCurrentUserId() {
@@ -23,13 +23,14 @@ function revalidate() {
 }
 
 // ============================================================
-// Create — idempotent thanks to the unique index on fingerprint.
-// Accidental double-clicks of "Add" will silently become a no-op
-// on the second call instead of creating a second row.
+// Create
 // ============================================================
 export async function createTransaction(formData: FormData) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
+
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return { error: 'No household found' };
 
   const supabase = createClient();
 
@@ -57,6 +58,7 @@ export async function createTransaction(formData: FormData) {
   const { error } = await supabase.from('transactions').upsert(
     {
       user_id: userId,
+      household_id: householdId,
       account_id: accountId,
       category_id: categoryId,
       type,
@@ -76,9 +78,7 @@ export async function createTransaction(formData: FormData) {
 }
 
 // ============================================================
-// Update — if the user edits a row into matching another row's
-// fingerprint, Postgres rejects with code 23505. We translate to
-// a friendly message.
+// Update
 // ============================================================
 export async function updateTransaction(formData: FormData) {
   const userId = await getCurrentUserId();
@@ -110,6 +110,8 @@ export async function updateTransaction(formData: FormData) {
     ? new Date(occurredAt).toISOString()
     : new Date().toISOString();
 
+  // RLS handles authorization; we don't need a household_id check here
+  // because the UPDATE policy blocks rows outside the user's household.
   const { error } = await supabase
     .from('transactions')
     .update({
@@ -122,8 +124,7 @@ export async function updateTransaction(formData: FormData) {
       notes: notes || null,
       occurred_at: occurredAtIso,
     })
-    .eq('id', id)
-    .eq('user_id', userId);
+    .eq('id', id);
 
   if (error) {
     if (error.code === '23505' || error.message.includes('fingerprint')) {
@@ -147,11 +148,8 @@ export async function deleteTransaction(id: string) {
   if (!userId) return { error: 'Not signed in' };
 
   const supabase = createClient();
-  const { error } = await supabase
-    .from('transactions')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
+  // RLS blocks deletion of rows outside user's household
+  const { error } = await supabase.from('transactions').delete().eq('id', id);
 
   if (error) return { error: error.message };
 
@@ -160,8 +158,7 @@ export async function deleteTransaction(id: string) {
 }
 
 // ============================================================
-// Bulk import — uses upsert with ignoreDuplicates so Postgres
-// silently skips conflicting rows and we can count skips.
+// Bulk import (CSV)
 // ============================================================
 export interface ImportRow {
   occurred_at: string;
@@ -179,6 +176,10 @@ export async function bulkImportTransactions(
 ): Promise<{ imported: number; skipped: number; error?: string }> {
   const userId = await getCurrentUserId();
   if (!userId) return { imported: 0, skipped: 0, error: 'Not signed in' };
+
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return { imported: 0, skipped: 0, error: 'No household found' };
+
   if (rows.length === 0) return { imported: 0, skipped: 0, error: 'No rows to import' };
   if (rows.length > 1000) {
     return { imported: 0, skipped: 0, error: 'Too many rows — limit is 1000 per import' };
@@ -188,6 +189,7 @@ export async function bulkImportTransactions(
 
   const inserts = rows.map((r) => ({
     user_id: userId,
+    household_id: householdId,
     account_id: r.account_id,
     category_id: r.category_id,
     type: r.type,
@@ -199,9 +201,6 @@ export async function bulkImportTransactions(
     external_id: r.external_id ?? null,
   }));
 
-  // Split into two batches so we can target the right conflict constraint.
-  // Mixing them in a single upsert call makes Supabase only resolve on one
-  // constraint, which misses half the dedup logic.
   const withExternalId = inserts.filter((r) => r.external_id !== null);
   const withoutExternalId = inserts.filter((r) => r.external_id === null);
 

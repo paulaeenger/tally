@@ -1,21 +1,15 @@
+// Target path in your repo: app/actions/goals.ts (REPLACE existing file)
+
 'use server';
 
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
-import { isSupabaseConfigured } from '@/lib/data/queries';
-
-// Note: the goals table currently has no "direction" column — we infer
-// direction from the shape of the goal:
-//   - target_amount > current_amount → save-up (default for savings goals)
-//   - target_amount < current_amount → pay-down (e.g. debt payoff to $0)
-// This keeps the schema backward compatible.
+import { isSupabaseConfigured, getCurrentHouseholdId } from '@/lib/data/queries';
 
 async function getCurrentUserId() {
   if (!isSupabaseConfigured()) return null;
   const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
   return user?.id ?? null;
 }
 
@@ -27,6 +21,9 @@ function revalidate() {
 export async function createGoal(formData: FormData) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
+
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return { error: 'No household found' };
 
   const name = (formData.get('name') as string | null)?.trim();
   const targetRaw = formData.get('target_amount') as string | null;
@@ -46,6 +43,7 @@ export async function createGoal(formData: FormData) {
   const supabase = createClient();
   const { error } = await supabase.from('goals').insert({
     user_id: userId,
+    household_id: householdId,
     name,
     target_amount: target,
     current_amount: current,
@@ -92,8 +90,7 @@ export async function updateGoal(formData: FormData) {
       color,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', id)
-    .eq('user_id', userId);
+    .eq('id', id);
 
   if (error) return { error: error.message };
 
@@ -106,11 +103,7 @@ export async function deleteGoal(id: string) {
   if (!userId) return { error: 'Not signed in' };
 
   const supabase = createClient();
-  const { error } = await supabase
-    .from('goals')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
+  const { error } = await supabase.from('goals').delete().eq('id', id);
 
   if (error) return { error: error.message };
 
@@ -118,11 +111,6 @@ export async function deleteGoal(id: string) {
   return { success: true };
 }
 
-/**
- * Bump the current_amount of a goal by a signed delta.
- * The caller can pass positive or negative numbers — we clamp the result at 0
- * so you can never have a negative balance on a goal.
- */
 export async function bumpGoalProgress(id: string, delta: number) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
@@ -130,12 +118,10 @@ export async function bumpGoalProgress(id: string, delta: number) {
 
   const supabase = createClient();
 
-  // Read current amount to clamp correctly
   const { data: existing, error: readErr } = await supabase
     .from('goals')
     .select('current_amount')
     .eq('id', id)
-    .eq('user_id', userId)
     .single();
 
   if (readErr || !existing) return { error: 'Goal not found' };
@@ -148,8 +134,7 @@ export async function bumpGoalProgress(id: string, delta: number) {
       current_amount: nextAmount,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', id)
-    .eq('user_id', userId);
+    .eq('id', id);
 
   if (error) return { error: error.message };
 

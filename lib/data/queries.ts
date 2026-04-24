@@ -1,4 +1,12 @@
 // Target path in your repo: lib/data/queries.ts (REPLACE existing file)
+//
+// All queries now filter by household_id instead of user_id. Users see the
+// data of whichever household they most recently joined.
+//
+// With RLS enabled in the migration, these filters are actually redundant —
+// Postgres would refuse to return other households' rows even without the
+// WHERE clause. We keep the filter explicit for clarity and so the code
+// is safe even if someone accidentally disables RLS.
 
 import { createClient } from '@/lib/supabase/server';
 import {
@@ -30,16 +38,71 @@ async function getUserId(): Promise<string | null> {
   }
 }
 
+/**
+ * Returns the current user's household_id — the household they most recently
+ * joined. Used by every data query.
+ */
+export async function getCurrentHouseholdId(): Promise<string | null> {
+  const userId = await getUserId();
+  if (!userId) return null;
+
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from('household_members')
+    .select('household_id')
+    .eq('user_id', userId)
+    .order('joined_at', { ascending: false })
+    .limit(1)
+    .single();
+
+  if (error || !data) return null;
+  return data.household_id;
+}
+
+/**
+ * Returns the current household's info (for display in settings / header).
+ */
+export async function getCurrentHousehold() {
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return null;
+
+  const supabase = createClient();
+  const { data } = await supabase
+    .from('households')
+    .select('id, name')
+    .eq('id', householdId)
+    .single();
+
+  return data;
+}
+
+/**
+ * Returns all members of the current household (for the settings page).
+ */
+export async function getHouseholdMembers() {
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return [];
+
+  const supabase = createClient();
+  const { data } = await supabase
+    .from('household_members')
+    .select('user_id, role, joined_at')
+    .eq('household_id', householdId)
+    .order('joined_at', { ascending: true });
+
+  return data ?? [];
+}
+
 // ---------- Accounts ----------
 export async function getAccounts(): Promise<Account[]> {
-  const userId = await getUserId();
-  if (!userId) return sampleAccounts;
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return sampleAccounts;
 
   const supabase = createClient();
   const { data, error } = await supabase
     .from('accounts')
     .select('*')
-    .eq('user_id', userId)
+    .eq('household_id', householdId)
     .eq('is_archived', false)
     .order('created_at', { ascending: true });
 
@@ -49,14 +112,14 @@ export async function getAccounts(): Promise<Account[]> {
 
 // ---------- Categories ----------
 export async function getCategories(): Promise<Category[]> {
-  const userId = await getUserId();
-  if (!userId) return sampleCategories;
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return sampleCategories;
 
   const supabase = createClient();
   const { data, error } = await supabase
     .from('categories')
     .select('*')
-    .eq('user_id', userId)
+    .eq('household_id', householdId)
     .order('name', { ascending: true });
 
   if (error || !data) return sampleCategories;
@@ -65,8 +128,8 @@ export async function getCategories(): Promise<Category[]> {
 
 // ---------- Transactions ----------
 export async function getTransactions(limit = 100): Promise<Transaction[]> {
-  const userId = await getUserId();
-  if (!userId) return sampleTransactions.slice(0, limit);
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return sampleTransactions.slice(0, limit);
 
   const supabase = createClient();
   const { data, error } = await supabase
@@ -76,7 +139,7 @@ export async function getTransactions(limit = 100): Promise<Transaction[]> {
        account:accounts(id, name, type),
        category:categories(id, name, color)`
     )
-    .eq('user_id', userId)
+    .eq('household_id', householdId)
     .order('occurred_at', { ascending: false })
     .limit(limit);
 
@@ -85,18 +148,15 @@ export async function getTransactions(limit = 100): Promise<Transaction[]> {
 }
 
 // ---------- Budgets ----------
-// Previous implementation ran one SELECT per budget (N+1 problem).
-// Rewritten to fetch all current-period expenses in a single query,
-// then group in memory.
 export async function getBudgets(): Promise<Budget[]> {
-  const userId = await getUserId();
-  if (!userId) return sampleBudgets;
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return sampleBudgets;
 
   const supabase = createClient();
   const { data: budgetsData, error } = await supabase
     .from('budgets')
     .select(`*, category:categories(id, name, color)`)
-    .eq('user_id', userId);
+    .eq('household_id', householdId);
 
   if (error || !budgetsData) return sampleBudgets;
 
@@ -130,7 +190,7 @@ export async function getBudgets(): Promise<Budget[]> {
   const { data: txData } = await supabase
     .from('transactions')
     .select('amount, category_id, occurred_at')
-    .eq('user_id', userId)
+    .eq('household_id', householdId)
     .eq('type', 'expense')
     .in('category_id', categoryIds)
     .gte('occurred_at', earliestStart.toISOString());
@@ -162,14 +222,14 @@ export async function getBudgets(): Promise<Budget[]> {
 
 // ---------- Goals ----------
 export async function getGoals(): Promise<Goal[]> {
-  const userId = await getUserId();
-  if (!userId) return sampleGoals;
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return sampleGoals;
 
   const supabase = createClient();
   const { data, error } = await supabase
     .from('goals')
     .select('*')
-    .eq('user_id', userId)
+    .eq('household_id', householdId)
     .order('created_at', { ascending: true });
 
   if (error || !data) return sampleGoals;
@@ -188,9 +248,6 @@ export async function getProfile() {
 }
 
 // ---------- CSV import: duplicate detection ----------
-// Belt-and-suspenders pairing with the DB unique indexes: we pre-flag likely
-// duplicates in the CSV preview, but the DB enforces uniqueness regardless
-// of whether the UI catches them first.
 export async function findExistingFingerprints(params: {
   accountId: string;
   fromDate: string;
@@ -198,8 +255,8 @@ export async function findExistingFingerprints(params: {
   externalIds: string[];
   fingerprints: string[];
 }): Promise<{ externalIds: Set<string>; fingerprints: Set<string> }> {
-  const userId = await getUserId();
-  if (!userId) return { externalIds: new Set(), fingerprints: new Set() };
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return { externalIds: new Set(), fingerprints: new Set() };
 
   const supabase = createClient();
 
@@ -212,7 +269,7 @@ export async function findExistingFingerprints(params: {
     const { data } = await supabase
       .from('transactions')
       .select('external_id')
-      .eq('user_id', userId)
+      .eq('household_id', householdId)
       .eq('account_id', params.accountId)
       .in('external_id', params.externalIds);
 
@@ -225,7 +282,7 @@ export async function findExistingFingerprints(params: {
     const { data } = await supabase
       .from('transactions')
       .select('fingerprint')
-      .eq('user_id', userId)
+      .eq('household_id', householdId)
       .gte('occurred_at', params.fromDate)
       .lte('occurred_at', params.toDate)
       .in('fingerprint', params.fingerprints);

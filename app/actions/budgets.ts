@@ -1,17 +1,17 @@
+// Target path in your repo: app/actions/budgets.ts (REPLACE existing file)
+
 'use server';
 
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
-import { isSupabaseConfigured } from '@/lib/data/queries';
+import { isSupabaseConfigured, getCurrentHouseholdId } from '@/lib/data/queries';
 
 type BudgetPeriod = 'weekly' | 'monthly' | 'yearly';
 
 async function getCurrentUserId() {
   if (!isSupabaseConfigured()) return null;
   const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
   return user?.id ?? null;
 }
 
@@ -23,6 +23,9 @@ function revalidate() {
 export async function createBudget(formData: FormData) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
+
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return { error: 'No household found' };
 
   const name = (formData.get('name') as string | null)?.trim();
   const categoryId = formData.get('category_id') as string | null;
@@ -44,6 +47,7 @@ export async function createBudget(formData: FormData) {
   const supabase = createClient();
   const { error } = await supabase.from('budgets').insert({
     user_id: userId,
+    household_id: householdId,
     name,
     category_id: categoryId,
     amount,
@@ -78,6 +82,7 @@ export async function updateBudget(formData: FormData) {
   }
 
   const supabase = createClient();
+  // RLS handles authorization
   const { error } = await supabase
     .from('budgets')
     .update({
@@ -87,8 +92,7 @@ export async function updateBudget(formData: FormData) {
       period,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', id)
-    .eq('user_id', userId);
+    .eq('id', id);
 
   if (error) return { error: error.message };
 
@@ -101,11 +105,7 @@ export async function deleteBudget(id: string) {
   if (!userId) return { error: 'Not signed in' };
 
   const supabase = createClient();
-  const { error } = await supabase
-    .from('budgets')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
+  const { error } = await supabase.from('budgets').delete().eq('id', id);
 
   if (error) return { error: error.message };
 

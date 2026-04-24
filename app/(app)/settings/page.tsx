@@ -1,11 +1,30 @@
+// Target path in your repo: app/(app)/settings/page.tsx (REPLACE existing file)
+
 import { User, Palette, Bell, Shield, LogOut } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { ThemeToggle } from '@/components/theme-toggle';
-import { getProfile } from '@/lib/data/queries';
+import { HouseholdSection } from '@/components/ui/household-section';
+import {
+  getProfile,
+  getCurrentHousehold,
+  getHouseholdMembers,
+} from '@/lib/data/queries';
+import { createClient } from '@/lib/supabase/server';
 import { signOut } from '@/app/auth/actions';
 
+export const revalidate = 60;
+
 export default async function SettingsPage() {
-  const profile = await getProfile();
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const [profile, household, members] = await Promise.all([
+    getProfile(),
+    getCurrentHousehold(),
+    getHouseholdMembers(),
+  ]);
 
   return (
     <div className="stagger space-y-6">
@@ -30,6 +49,13 @@ export default async function SettingsPage() {
           <button className="btn-outline hidden sm:inline-flex">Edit profile</button>
         </div>
       </section>
+
+      {/* Household sharing */}
+      <HouseholdSection
+        household={household}
+        members={members}
+        currentUserId={user?.id ?? ''}
+      />
 
       {/* Settings groups */}
       <section className="card divide-y divide-border overflow-hidden">
