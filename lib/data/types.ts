@@ -31,7 +31,7 @@ export interface Category {
   color: string;
   icon: string | null;
   parent_id: string | null;
-  is_refund: boolean;
+  is_refund?: boolean;
   created_at: string;
 }
 
