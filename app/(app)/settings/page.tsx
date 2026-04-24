@@ -1,9 +1,10 @@
-// Target path in your repo: app/(app)/settings/page.tsx (REPLACE existing file)
+// Target path: app/(app)/settings/page.tsx (REPLACE existing file)
 
 import { User, Palette, Bell, Shield, LogOut } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { HouseholdSection } from '@/components/ui/household-section';
+import { DangerZone } from '@/components/ui/danger-zone';
 import {
   getProfile,
   getCurrentHousehold,
@@ -85,7 +86,7 @@ export default async function SettingsPage() {
         />
       </section>
 
-      {/* Danger zone */}
+      {/* Session */}
       <section className="card p-6">
         <h3 className="label">Session</h3>
         <form action={signOut} className="mt-3">
@@ -98,6 +99,12 @@ export default async function SettingsPage() {
           </button>
         </form>
       </section>
+
+      {/* Danger zone */}
+      <DangerZone
+        householdName={household?.name}
+        memberCount={members.length}
+      />
 
       <p className="pt-4 text-center text-xs text-faint">
         Tally · v0.1 · Built with Next.js & Supabase
