@@ -1,5 +1,3 @@
-// Target path in your repo: lib/data/types.ts (REPLACE existing file)
-
 export type AccountType = 'checking' | 'savings' | 'credit' | 'investment' | 'cash' | 'loan';
 export type TransactionType = 'income' | 'expense' | 'transfer';
 export type BudgetPeriod = 'weekly' | 'monthly' | 'yearly';
@@ -33,6 +31,7 @@ export interface Category {
   color: string;
   icon: string | null;
   parent_id: string | null;
+  is_refund: boolean;
   created_at: string;
 }
 
@@ -48,12 +47,9 @@ export interface Transaction {
   notes: string | null;
   occurred_at: string;
   created_at: string;
-  // Dedup fields (added by 20260422_transaction_dedup migration)
-  external_id?: string | null;
-  fingerprint?: string | null;
   // joined fields
   account?: Pick<Account, 'id' | 'name' | 'type'>;
-  category?: Pick<Category, 'id' | 'name' | 'color'> | null;
+  category?: Pick<Category, 'id' | 'name' | 'color' | 'is_refund'> | null;
 }
 
 export interface Budget {
@@ -65,8 +61,9 @@ export interface Budget {
   period: BudgetPeriod;
   created_at: string;
   updated_at: string;
+  // computed
   spent?: number;
-  category?: Pick<Category, 'id' | 'name' | 'color'> | null;
+  category?: Pick<Category, 'id' | 'name' | 'color' | 'is_refund'> | null;
 }
 
 export interface Goal {

@@ -137,7 +137,7 @@ export async function getTransactions(limit = 100): Promise<Transaction[]> {
     .select(
       `*,
        account:accounts(id, name, type),
-       category:categories(id, name, color)`
+       category:categories(id, name, color, is_refund)`
     )
     .eq('household_id', householdId)
     .order('occurred_at', { ascending: false })
@@ -155,7 +155,7 @@ export async function getBudgets(): Promise<Budget[]> {
   const supabase = createClient();
   const { data: budgetsData, error } = await supabase
     .from('budgets')
-    .select(`*, category:categories(id, name, color)`)
+    .select(`*, category:categories(id, name, color, is_refund)`)
     .eq('household_id', householdId);
 
   if (error || !budgetsData) return sampleBudgets;

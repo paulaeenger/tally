@@ -6,7 +6,7 @@ import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import { isSupabaseConfigured, getCurrentHouseholdId } from '@/lib/data/queries';
 
-const DEFAULT_CATEGORIES = [
+const DEFAULT_CATEGORIES: Array<{ name: string; color: string; is_refund?: boolean }> = [
   { name: 'Groceries', color: '#4a7c59' },
   { name: 'Dining', color: '#c45a3d' },
   { name: 'Transport', color: '#3d5a80' },
@@ -19,6 +19,7 @@ const DEFAULT_CATEGORIES = [
   { name: 'Travel', color: '#5f8ca8' },
   { name: 'Gifts', color: '#b57289' },
   { name: 'Income', color: '#15803d' },
+  { name: 'Refunds', color: '#15803d', is_refund: true },
   { name: 'Other', color: '#9c9891' },
 ];
 
@@ -49,6 +50,7 @@ export async function seedCategoriesIfNeeded() {
     household_id: householdId,
     name: c.name,
     color: c.color,
+    is_refund: c.is_refund ?? false,
   }));
 
   const { error } = await supabase.from('categories').insert(rows);

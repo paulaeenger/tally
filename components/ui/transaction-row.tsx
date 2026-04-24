@@ -10,8 +10,16 @@ interface TransactionRowProps {
 export function TransactionRow({ tx, compact = false }: TransactionRowProps) {
   const isIncome = tx.type === 'income';
   const isTransfer = tx.type === 'transfer';
-  const amountColor = isIncome ? 'text-positive' : isTransfer ? 'text-muted' : 'text-foreground';
-  const prefix = isIncome ? '+' : isTransfer ? '' : '−';
+  const isRefund = tx.type === 'expense' && tx.category?.is_refund === true;
+
+  // Refunds visually look like money-in (green +). They're technically
+  // expenses in the data model, but visually they're the opposite.
+  const amountColor = isIncome || isRefund
+    ? 'text-positive'
+    : isTransfer
+      ? 'text-muted'
+      : 'text-foreground';
+  const prefix = isIncome || isRefund ? '+' : isTransfer ? '' : '−';
 
   const dotColor = tx.category?.color ?? 'rgb(var(--muted))';
   const initial =

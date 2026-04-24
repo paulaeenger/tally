@@ -5,6 +5,7 @@ import { CashflowChart } from '@/components/charts/cashflow-chart';
 import { CategoryDonut } from '@/components/charts/category-donut';
 import { TransactionRow } from '@/components/ui/transaction-row';
 import { EmptyState } from '@/components/ui/empty-state';
+import { BudgetGlance } from '@/components/ui/budget-glance';
 import { getAccounts, getTransactions, getBudgets, getGoals } from '@/lib/data/queries';
 import { buildCashflow, buildCategorySlices, sumByType } from '@/lib/utils/aggregations';
 import { formatCurrency, formatPercent } from '@/lib/utils/cn';
@@ -13,7 +14,7 @@ import { ArrowRight, Wallet, ArrowLeftRight } from 'lucide-react';
 
 // This page renders server-side on each request and should not be cached
 // across requests — user data changes and should be reflected immediately.
-export const dynamic = 'force-dynamic';
+export const revalidate = 60;
 
 export default async function DashboardPage() {
   const [accounts, transactions, budgets, goals] = await Promise.all([
@@ -50,6 +51,10 @@ export default async function DashboardPage() {
       : null;
 
   const recent = transactions.slice(0, 6);
+
+  const hasMonthlyBudgets = budgets.some((b) => b.period === 'monthly');
+  const hasTopGoal = !!(topGoal && Number(topGoal.target_amount) > 0);
+  const hasRightColumn = hasMonthlyBudgets || hasTopGoal;
 
   // Detect the "just signed up, no data yet" state for a friendlier first experience
   const isEmpty =
@@ -182,9 +187,9 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      {/* Transactions + top goal */}
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="card p-5 sm:p-6 lg:col-span-2">
+      {/* Transactions + right rail (budgets + top goal) */}
+      <div className={`grid gap-4 ${hasRightColumn ? 'lg:grid-cols-3' : ''}`}>
+        <div className={`card p-5 sm:p-6 ${hasRightColumn ? 'lg:col-span-2' : ''}`}>
           <div className="mb-2 flex items-center justify-between">
             <h2 className="font-display text-lg text-foreground">Recent activity</h2>
             <Link
@@ -210,40 +215,46 @@ export default async function DashboardPage() {
           )}
         </div>
 
-        {topGoal && Number(topGoal.target_amount) > 0 && (
-          <div className="card overflow-hidden p-5 sm:p-6">
-            <p className="label">Closest goal</p>
-            <h3 className="mt-1 font-display text-xl text-foreground">{topGoal.name}</h3>
-            <div className="mt-4">
-              <div className="flex items-baseline justify-between text-sm">
-                <span className="tabular text-foreground">
-                  {formatCurrency(Number(topGoal.current_amount))}
-                </span>
-                <span className="tabular text-faint">
-                  of {formatCurrency(Number(topGoal.target_amount))}
-                </span>
+        {hasRightColumn && (
+          <div className="space-y-4">
+            {hasMonthlyBudgets && <BudgetGlance budgets={budgets} />}
+
+            {hasTopGoal && topGoal && (
+              <div className="card overflow-hidden p-5 sm:p-6">
+                <p className="label">Closest goal</p>
+                <h3 className="mt-1 font-display text-xl text-foreground">{topGoal.name}</h3>
+                <div className="mt-4">
+                  <div className="flex items-baseline justify-between text-sm">
+                    <span className="tabular text-foreground">
+                      {formatCurrency(Number(topGoal.current_amount))}
+                    </span>
+                    <span className="tabular text-faint">
+                      of {formatCurrency(Number(topGoal.target_amount))}
+                    </span>
+                  </div>
+                  <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-subtle">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width:
+                          Math.min(
+                            100,
+                            (Number(topGoal.current_amount) / Number(topGoal.target_amount)) * 100
+                          ) + '%',
+                        background: topGoal.color,
+                      }}
+                    />
+                  </div>
+                  <p className="mt-3 text-xs text-muted">
+                    {formatPercent(
+                      Number(topGoal.current_amount) / Number(topGoal.target_amount),
+                      0
+                    )}{' '}
+                    complete
+                  </p>
+                </div>
               </div>
-              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-subtle">
-                <div
-                  className="h-full rounded-full transition-all"
-                  style={{
-                    width:
-                      Math.min(
-                        100,
-                        (Number(topGoal.current_amount) / Number(topGoal.target_amount)) * 100
-                      ) + '%',
-                    background: topGoal.color,
-                  }}
-                />
-              </div>
-              <p className="mt-3 text-xs text-muted">
-                {formatPercent(
-                  Number(topGoal.current_amount) / Number(topGoal.target_amount),
-                  0
-                )}{' '}
-                complete
-              </p>
-            </div>
+            )}
           </div>
         )}
       </div>

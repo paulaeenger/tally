@@ -127,7 +127,13 @@ export default async function DashboardPage() {
           label="Spending MTD"
           value={formatCurrency(monthFlow.expense)}
           trend="negative"
-          footnote={budgetTotal > 0 ? formatPercent(budgetPct) + ' of budget' : undefined}
+          footnote={
+            monthFlow.refund > 0
+              ? `Net of ${formatCurrency(monthFlow.refund)} refunds`
+              : budgetTotal > 0
+                ? formatPercent(budgetPct) + ' of budget'
+                : undefined
+          }
         />
       </div>
 
