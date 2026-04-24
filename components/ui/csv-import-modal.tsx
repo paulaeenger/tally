@@ -4,13 +4,19 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Upload, FileText, Loader2, AlertCircle, Check, AlertTriangle } from 'lucide-react';
+import { Upload, FileText, Loader2, AlertCircle, Check, AlertTriangle, Sparkles } from 'lucide-react';
 import { format } from 'date-fns';
 import { Modal } from '@/components/ui/modal';
-import { parseCSV, computeFingerprint, type ParsedRow } from '@/lib/utils/csv-parser';
+import { parseCSV, computeFingerprint, type ParsedRow, type MerchantRuleLike } from '@/lib/utils/csv-parser';
 import { bulkImportTransactions } from '@/app/actions/transactions';
 import { checkForDuplicates } from '@/app/actions/transactions-check';
-import type { Account, Category } from '@/lib/data/types';
+import {
+  getMerchantRules,
+  upsertMerchantRule,
+  incrementRuleMatches,
+  type MerchantRule,
+} from '@/app/actions/merchant-rules';
+import type { Account, Category, TransactionType } from '@/lib/data/types';
 import { cn, formatCurrency } from '@/lib/utils/cn';
 
 type Stage = 'upload' | 'preview' | 'done';
@@ -25,6 +31,11 @@ interface ImportModalProps {
 interface PreviewRow extends ParsedRow {
   isDuplicate: boolean;
   dupReason: 'external_id' | 'fingerprint' | null;
+  // User can override the type and category in the review UI
+  userType: TransactionType;
+  userCategoryId: string | null;
+  // If true, user wants to save this row's type/category as a rule
+  saveAsRule: boolean;
 }
 
 export function CsvImportModal({ open, onClose, accounts, categories }: ImportModalProps) {
@@ -41,12 +52,35 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [isCheckingDupes, setIsCheckingDupes] = useState(false);
-  const [importResult, setImportResult] = useState<{ imported: number; skipped: number }>({
+  const [rules, setRules] = useState<MerchantRule[]>([]);
+  const [importResult, setImportResult] = useState<{
+    imported: number;
+    skipped: number;
+    rulesSaved: number;
+  }>({
     imported: 0,
     skipped: 0,
+    rulesSaved: 0,
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
+
+  // Load existing merchant rules when the modal opens. These are used
+  // by the parser to pre-fill type/category suggestions for known merchants.
+  //
+  // Note: handleFile also re-fetches rules if they haven't loaded yet,
+  // so the parsing is always correct even if the user drops a file very
+  // quickly after opening the modal.
+  const [rulesLoaded, setRulesLoaded] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    setRulesLoaded(false);
+    (async () => {
+      const r = await getMerchantRules();
+      setRules(r);
+      setRulesLoaded(true);
+    })();
+  }, [open]);
 
   function reset() {
     setStage('upload');
@@ -57,7 +91,7 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
     setDetectedFormat('');
     setExcludedRows(new Set());
     setError(null);
-    setImportResult({ imported: 0, skipped: 0 });
+    setImportResult({ imported: 0, skipped: 0, rulesSaved: 0 });
   }
 
   function handleClose() {
@@ -72,7 +106,26 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
       return;
     }
     const text = await file.text();
-    const result = parseCSV(text);
+
+    // Ensure rules are loaded before parsing. If the user dropped a file
+    // faster than the rules could load (rare but possible), fetch them now
+    // so the first parse isn't missing rule matches.
+    let rulesForParse: MerchantRule[] = rules;
+    if (!rulesLoaded) {
+      rulesForParse = await getMerchantRules();
+      setRules(rulesForParse);
+      setRulesLoaded(true);
+    }
+
+    // Convert DB rules to the parser's expected shape
+    const parserRules: MerchantRuleLike[] = rulesForParse.map((r) => ({
+      id: r.id,
+      pattern: r.pattern,
+      type: r.type,
+      category_id: r.category_id,
+    }));
+
+    const result = parseCSV(text, parserRules);
     if (result.rows.length === 0) {
       setError(
         `No importable rows found. ${
@@ -113,6 +166,13 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
         }),
         isDuplicate: false,
         dupReason: null,
+        // User overrides default to whatever the parser chose (may be
+        // rule-informed or sign-based)
+        userType: r.type,
+        userCategoryId: r.suggestedCategoryId ?? null,
+        // Default: don't re-save rules that already exist. Only offer to
+        // save if nothing matched. User can toggle.
+        saveAsRule: !r.matchedRuleId,
       }));
 
       const dates = parsed.map((r) => new Date(r.occurred_at).getTime());
@@ -176,6 +236,27 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
     });
   }
 
+  function updateRowType(idx: number, newType: TransactionType) {
+    setPreview((prev) =>
+      prev.map((r, i) => (i === idx ? { ...r, userType: newType } : r))
+    );
+  }
+
+  // Reserved for future per-row category dropdown. Currently rules-applied
+  // and default categories are used instead.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  function updateRowCategory(idx: number, newCategoryId: string | null) {
+    setPreview((prev) =>
+      prev.map((r, i) => (i === idx ? { ...r, userCategoryId: newCategoryId } : r))
+    );
+  }
+
+  function toggleSaveAsRule(idx: number) {
+    setPreview((prev) =>
+      prev.map((r, i) => (i === idx ? { ...r, saveAsRule: !r.saveAsRule } : r))
+    );
+  }
+
   const includedRows = useMemo(
     () => preview.filter((_, i) => !excludedRows.has(i)),
     [preview, excludedRows]
@@ -186,14 +267,22 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
     [preview]
   );
 
+  const rulesToSaveCount = useMemo(
+    () =>
+      preview.filter((r, i) => r.saveAsRule && !excludedRows.has(i)).length,
+    [preview, excludedRows]
+  );
+
   const summary = useMemo(() => {
     let income = 0;
     let expense = 0;
+    let transfer = 0;
     for (const r of includedRows) {
-      if (r.type === 'income') income += r.amount;
-      else expense += r.amount;
+      if (r.userType === 'income') income += r.amount;
+      else if (r.userType === 'expense') expense += r.amount;
+      else transfer += r.amount;
     }
-    return { income, expense, count: includedRows.length };
+    return { income, expense, transfer, count: includedRows.length };
   }, [includedRows]);
 
   async function handleImport() {
@@ -208,14 +297,15 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
 
     setError(null);
     startTransition(async () => {
+      // 1. Import transactions with user-overridden type/category
       const result = await bulkImportTransactions(
         includedRows.map((r) => ({
           occurred_at: r.occurred_at,
           merchant: r.merchant,
           amount: r.amount,
-          type: r.type,
+          type: r.userType, // user override (defaults to parser's guess)
           account_id: accountId,
-          category_id: defaultCategoryId || null,
+          category_id: r.userCategoryId || defaultCategoryId || null,
           external_id: r.external_id,
           notes: null,
         }))
@@ -224,7 +314,32 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
         setError(result.error);
         return;
       }
-      setImportResult({ imported: result.imported, skipped: result.skipped });
+
+      // 2. Save/update rules for rows where user checked "save as rule"
+      const rowsToSaveAsRule = includedRows.filter((r) => r.saveAsRule);
+      let rulesSaved = 0;
+      for (const r of rowsToSaveAsRule) {
+        const ruleResult = await upsertMerchantRule({
+          pattern: r.merchant.trim().toLowerCase(),
+          type: r.userType,
+          category_id: r.userCategoryId || null,
+        });
+        if (!ruleResult.error) rulesSaved++;
+      }
+
+      // 3. Bump match counts for any rules that were applied during parsing
+      const matchedRuleIds = includedRows
+        .map((r) => r.matchedRuleId)
+        .filter((id): id is string => !!id);
+      if (matchedRuleIds.length > 0) {
+        await incrementRuleMatches(matchedRuleIds);
+      }
+
+      setImportResult({
+        imported: result.imported,
+        skipped: result.skipped,
+        rulesSaved,
+      });
       setStage('done');
       router.refresh();
     });
@@ -264,7 +379,7 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
             ? `${detectedFormat}${fileName ? ' · ' + fileName : ''}`
             : 'Your transactions have been added.'
       }
-      className="sm:max-w-2xl"
+      className="sm:max-w-3xl"
     >
       {stage === 'upload' && (
         <div className="space-y-4">
@@ -378,6 +493,11 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
                 −{formatCurrency(summary.expense)} expenses
               </span>
             )}
+            {summary.transfer > 0 && (
+              <span className="chip text-muted">
+                {formatCurrency(summary.transfer)} transfers
+              </span>
+            )}
             {duplicateCount > 0 && (
               <span className="chip text-warning">
                 <AlertTriangle size={11} strokeWidth={1.75} />
@@ -399,10 +519,17 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface">
                 <tr className="border-b border-border text-xs text-faint">
-                  <th className="w-10 px-3 py-2"></th>
-                  <th className="px-3 py-2 text-left font-medium">Date</th>
-                  <th className="px-3 py-2 text-left font-medium">Merchant</th>
-                  <th className="px-3 py-2 text-right font-medium">Amount</th>
+                  <th className="w-10 px-2 py-2"></th>
+                  <th className="px-2 py-2 text-left font-medium">Date</th>
+                  <th className="px-2 py-2 text-left font-medium">Merchant</th>
+                  <th className="px-2 py-2 text-right font-medium">Amount</th>
+                  <th className="px-2 py-2 text-left font-medium">Type</th>
+                  <th
+                    className="px-2 py-2 text-center font-medium"
+                    title="When checked, the app will remember this merchant's type for future imports."
+                  >
+                    Save rule
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -417,7 +544,7 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
                         r.isDuplicate && 'bg-warning/5'
                       )}
                     >
-                      <td className="px-3 py-2">
+                      <td className="px-2 py-2">
                         <input
                           type="checkbox"
                           checked={!excluded}
@@ -426,35 +553,75 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
                           className="h-4 w-4 rounded border-border"
                         />
                       </td>
-                      <td className="px-3 py-2 text-xs text-muted tabular">
-                        {format(new Date(r.occurred_at), 'MMM d, yyyy')}
+                      <td className="px-2 py-2 text-xs text-muted tabular">
+                        {format(new Date(r.occurred_at), 'MMM d')}
                       </td>
-                      <td className="px-3 py-2 text-foreground">
-                        <div className="flex items-center gap-2">
+                      <td className="px-2 py-2 text-foreground">
+                        <div className="flex items-center gap-1.5">
                           <span className="truncate">{r.merchant}</span>
+                          {r.matchedRuleId && (
+                            <Sparkles
+                              size={11}
+                              strokeWidth={1.75}
+                              className="shrink-0 text-accent"
+                              aria-label="Matched a saved rule"
+                            />
+                          )}
                           {r.isDuplicate && (
                             <span
-                              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning"
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
                               title={
                                 r.dupReason === 'external_id'
                                   ? 'Same transaction ID already in your account'
                                   : 'Same date, merchant, and amount as an existing transaction'
                               }
                             >
-                              <AlertTriangle size={10} strokeWidth={2} />
-                              Likely duplicate
+                              <AlertTriangle size={9} strokeWidth={2} />
+                              Dup
                             </span>
                           )}
                         </div>
                       </td>
                       <td
                         className={cn(
-                          'px-3 py-2 text-right font-medium tabular',
-                          r.type === 'income' ? 'text-positive' : 'text-foreground'
+                          'px-2 py-2 text-right font-medium tabular',
+                          r.userType === 'income'
+                            ? 'text-positive'
+                            : r.userType === 'transfer'
+                              ? 'text-muted'
+                              : 'text-foreground'
                         )}
                       >
-                        {r.type === 'income' ? '+' : '−'}
+                        {r.userType === 'income'
+                          ? '+'
+                          : r.userType === 'transfer'
+                            ? ''
+                            : '−'}
                         {formatCurrency(r.amount)}
+                      </td>
+                      <td className="px-2 py-2">
+                        <select
+                          value={r.userType}
+                          onChange={(e) =>
+                            updateRowType(i, e.target.value as TransactionType)
+                          }
+                          disabled={excluded}
+                          className="w-full rounded border border-border bg-surface px-1.5 py-1 text-xs text-foreground focus:border-accent focus:outline-none"
+                        >
+                          <option value="expense">Expense</option>
+                          <option value="income">Income</option>
+                          <option value="transfer">Transfer</option>
+                        </select>
+                      </td>
+                      <td className="px-2 py-2 text-center">
+                        <input
+                          type="checkbox"
+                          checked={r.saveAsRule}
+                          onChange={() => toggleSaveAsRule(i)}
+                          disabled={excluded}
+                          aria-label={`Save rule for ${r.merchant}`}
+                          className="h-4 w-4 rounded border-border"
+                        />
                       </td>
                     </tr>
                   );
@@ -462,6 +629,16 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
               </tbody>
             </table>
           </div>
+
+          {rulesToSaveCount > 0 && (
+            <p className="flex items-start gap-2 text-xs text-muted">
+              <Sparkles size={12} strokeWidth={1.75} className="mt-0.5 shrink-0 text-accent" />
+              <span>
+                {rulesToSaveCount} rule{rulesToSaveCount === 1 ? '' : 's'} will be saved
+                so the app remembers these merchants for future imports.
+              </span>
+            </p>
+          )}
 
           {duplicateCount > 0 && (
             <p className="text-xs text-muted">
@@ -514,7 +691,14 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
                 {importResult.skipped} duplicate{importResult.skipped === 1 ? '' : 's'} skipped automatically.
               </p>
             )}
-            {importResult.skipped === 0 && (
+            {importResult.rulesSaved > 0 && (
+              <p className="mt-1 flex items-center justify-center gap-1.5 text-sm text-muted">
+                <Sparkles size={13} strokeWidth={1.75} className="text-accent" />
+                {importResult.rulesSaved} rule{importResult.rulesSaved === 1 ? '' : 's'} saved
+                for next time.
+              </p>
+            )}
+            {importResult.skipped === 0 && importResult.rulesSaved === 0 && (
               <p className="mt-1 text-sm text-muted">Head to the dashboard to see them.</p>
             )}
           </div>

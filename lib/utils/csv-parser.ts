@@ -12,10 +12,26 @@ export interface ParsedRow {
   occurred_at: string;
   merchant: string;
   amount: number;
-  type: 'income' | 'expense';
+  type: 'income' | 'expense' | 'transfer';
   external_id: string | null;
   fingerprint: string; // filled in by caller once account is chosen
   raw: string;
+  // If a merchant rule matched this row, the id of that rule.
+  // Used by the caller to bump match_count after a successful import.
+  matchedRuleId?: string | null;
+  // The category suggested by the matched rule (if any).
+  suggestedCategoryId?: string | null;
+}
+
+/**
+ * A minimal subset of a merchant rule that the parser needs.
+ * Keeps the parser decoupled from the DB shape.
+ */
+export interface MerchantRuleLike {
+  id: string;
+  pattern: string;
+  type: 'income' | 'expense' | 'transfer';
+  category_id: string | null;
 }
 
 export interface ParseResult {
@@ -313,9 +329,36 @@ function findExternalIdColumn(headers: string[]): number {
 }
 
 // ----------------------------------------------------------------
+// Rule matching — applied after merchant is cleaned.
+//
+// Matches against the lowercased merchant text using "contains" logic.
+// This catches bank junk (store numbers, locations, order IDs) that
+// gets appended to the merchant name. The rule's pattern should already
+// be stored lowercase.
+// ----------------------------------------------------------------
+function findMatchingRule(
+  merchant: string,
+  rules: MerchantRuleLike[]
+): MerchantRuleLike | null {
+  if (!merchant || rules.length === 0) return null;
+  const normalized = merchant.trim().toLowerCase();
+
+  // Prefer exact match first, then fall back to contains.
+  const exact = rules.find((r) => r.pattern === normalized);
+  if (exact) return exact;
+
+  // Find all contains matches, pick the longest pattern (most specific).
+  const contains = rules
+    .filter((r) => normalized.includes(r.pattern))
+    .sort((a, b) => b.pattern.length - a.pattern.length);
+
+  return contains[0] ?? null;
+}
+
+// ----------------------------------------------------------------
 // Main parser
 // ----------------------------------------------------------------
-export function parseCSV(text: string): ParseResult {
+export function parseCSV(text: string, rules: MerchantRuleLike[] = []): ParseResult {
   const lines = splitLines(text);
   if (lines.length < 2) {
     return {
@@ -408,7 +451,16 @@ export function parseCSV(text: string): ParseResult {
         : null;
 
     const merchant = cleanMerchant(desc);
-    const type: 'income' | 'expense' = amount < 0 ? 'expense' : 'income';
+
+    // Sign-based default classification
+    const signBasedType: 'income' | 'expense' = amount < 0 ? 'expense' : 'income';
+
+    // Consult rules — if a rule matches, its type overrides the sign-based guess
+    // and its category is carried through as a suggestion.
+    const matchedRule = findMatchingRule(merchant, rules);
+    const type: 'income' | 'expense' | 'transfer' = matchedRule
+      ? matchedRule.type
+      : signBasedType;
 
     rows.push({
       occurred_at: date.toISOString(),
@@ -418,6 +470,8 @@ export function parseCSV(text: string): ParseResult {
       external_id: externalId,
       fingerprint: '',
       raw: rawLine,
+      matchedRuleId: matchedRule?.id ?? null,
+      suggestedCategoryId: matchedRule?.category_id ?? null,
     });
   }
 
