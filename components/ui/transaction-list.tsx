@@ -1,14 +1,33 @@
+// Target path: components/ui/transaction-list.tsx (REPLACE existing file)
+
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useTransition } from 'react';
 import { format, parseISO } from 'date-fns';
-import { Search } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import {
+  Search,
+  CheckSquare,
+  Square,
+  X,
+  Tag,
+  ArrowLeftRight,
+  Trash2,
+  Loader2,
+  AlertTriangle,
+} from 'lucide-react';
 import { EditableTransactionRow } from '@/components/ui/transaction-actions';
 import { EmptyState } from '@/components/ui/empty-state';
+import { Modal } from '@/components/ui/modal';
+import {
+  bulkUpdateTransactions,
+  bulkDeleteTransactions,
+} from '@/app/actions/transactions';
 import { cn, formatCurrency } from '@/lib/utils/cn';
-import type { Account, Category, Transaction } from '@/lib/data/types';
+import type { Account, Category, Transaction, TransactionType } from '@/lib/data/types';
 
 type Filter = 'all' | 'income' | 'expense' | 'transfer';
+type BulkAction = 'category' | 'type' | 'delete' | null;
 
 interface Props {
   transactions: Transaction[];
@@ -17,8 +36,14 @@ interface Props {
 }
 
 export function TransactionList({ transactions, accounts, categories }: Props) {
+  const router = useRouter();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+
+  // Selection mode state
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<BulkAction>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -33,7 +58,6 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
     });
   }, [transactions, query, filter]);
 
-  // group by day
   const groups = useMemo(() => {
     const map = new Map<string, Transaction[]>();
     for (const tx of filtered) {
@@ -56,9 +80,35 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
     { key: 'transfer', label: 'Transfers' },
   ];
 
+  function toggleId(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllVisible() {
+    setSelectedIds(new Set(filtered.map((t) => t.id)));
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
+
+  function exitSelectionMode() {
+    setSelectionMode(false);
+    clearSelection();
+  }
+
+  const allVisibleSelected =
+    filtered.length > 0 && filtered.every((t) => selectedIds.has(t.id));
+  const selectedArray = Array.from(selectedIds);
+
   return (
     <div className="space-y-4">
-      {/* Controls */}
+      {/* Controls — search + filters */}
       <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative flex-1 sm:max-w-sm">
           <Search
@@ -74,23 +124,90 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
             className="input pl-9"
           />
         </div>
-        <div className="flex items-center gap-1 rounded-lg border border-border bg-subtle/60 p-1">
-          {filters.map((f) => (
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 rounded-lg border border-border bg-subtle/60 p-1">
+            {filters.map((f) => (
+              <button
+                key={f.key}
+                onClick={() => setFilter(f.key)}
+                className={cn(
+                  'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                  filter === f.key
+                    ? 'bg-surface text-foreground shadow-subtle'
+                    : 'text-muted hover:text-foreground'
+                )}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          {!selectionMode ? (
             <button
-              key={f.key}
-              onClick={() => setFilter(f.key)}
-              className={cn(
-                'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
-                filter === f.key
-                  ? 'bg-surface text-foreground shadow-subtle'
-                  : 'text-muted hover:text-foreground'
-              )}
+              onClick={() => setSelectionMode(true)}
+              className="btn-outline text-xs"
             >
-              {f.label}
+              Edit
             </button>
-          ))}
+          ) : (
+            <button
+              onClick={exitSelectionMode}
+              className="btn-ghost inline-flex items-center gap-1 text-xs"
+            >
+              <X size={13} strokeWidth={2} />
+              Done
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Bulk action toolbar (only in selection mode with selections) */}
+      {selectionMode && (
+        <div className="card flex flex-wrap items-center justify-between gap-3 p-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() =>
+                allVisibleSelected ? clearSelection() : selectAllVisible()
+              }
+              className="inline-flex items-center gap-1.5 text-sm text-foreground"
+            >
+              {allVisibleSelected ? (
+                <CheckSquare size={15} strokeWidth={1.75} />
+              ) : (
+                <Square size={15} strokeWidth={1.75} />
+              )}
+              {selectedIds.size > 0
+                ? `${selectedIds.size} selected`
+                : 'Select all visible'}
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setBulkAction('category')}
+              disabled={selectedIds.size === 0}
+              className="btn-ghost inline-flex items-center gap-1 text-xs disabled:opacity-40"
+            >
+              <Tag size={13} strokeWidth={1.75} />
+              Set category
+            </button>
+            <button
+              onClick={() => setBulkAction('type')}
+              disabled={selectedIds.size === 0}
+              className="btn-ghost inline-flex items-center gap-1 text-xs disabled:opacity-40"
+            >
+              <ArrowLeftRight size={13} strokeWidth={1.75} />
+              Set type
+            </button>
+            <button
+              onClick={() => setBulkAction('delete')}
+              disabled={selectedIds.size === 0}
+              className="btn-ghost inline-flex items-center gap-1 text-xs text-negative disabled:opacity-40"
+            >
+              <Trash2 size={13} strokeWidth={1.75} />
+              Delete
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Summary bar */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-muted">
@@ -102,7 +219,7 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
         </span>
       </div>
 
-      {/* List grouped by day */}
+      {/* List */}
       {groups.length === 0 ? (
         <EmptyState
           icon={Search}
@@ -123,11 +240,14 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
               </div>
               <div className="px-5">
                 {txs.map((tx) => (
-                  <EditableTransactionRow
+                  <TransactionRowWithSelection
                     key={tx.id}
                     tx={tx}
                     accounts={accounts}
                     categories={categories}
+                    selectionMode={selectionMode}
+                    selected={selectedIds.has(tx.id)}
+                    onToggle={() => toggleId(tx.id)}
                   />
                 ))}
               </div>
@@ -135,6 +255,371 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
           ))}
         </div>
       )}
+
+      {/* Bulk action modals */}
+      {bulkAction === 'category' && (
+        <BulkCategoryModal
+          ids={selectedArray}
+          categories={categories}
+          onClose={(success) => {
+            setBulkAction(null);
+            if (success) {
+              exitSelectionMode();
+              router.refresh();
+            }
+          }}
+        />
+      )}
+      {bulkAction === 'type' && (
+        <BulkTypeModal
+          ids={selectedArray}
+          onClose={(success) => {
+            setBulkAction(null);
+            if (success) {
+              exitSelectionMode();
+              router.refresh();
+            }
+          }}
+        />
+      )}
+      {bulkAction === 'delete' && (
+        <BulkDeleteModal
+          ids={selectedArray}
+          onClose={(success) => {
+            setBulkAction(null);
+            if (success) {
+              exitSelectionMode();
+              router.refresh();
+            }
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function TransactionRowWithSelection({
+  tx,
+  accounts,
+  categories,
+  selectionMode,
+  selected,
+  onToggle,
+}: {
+  tx: Transaction;
+  accounts: Pick<Account, 'id' | 'name' | 'type'>[];
+  categories: Pick<Category, 'id' | 'name' | 'color'>[];
+  selectionMode: boolean;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  if (!selectionMode) {
+    return (
+      <EditableTransactionRow tx={tx} accounts={accounts} categories={categories} />
+    );
+  }
+
+  // In selection mode, render with a checkbox and disable inline editing.
+  // Tapping the row toggles selection.
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={cn(
+        'flex w-full items-center gap-3 border-b border-border/60 py-3 text-left transition-colors hover:bg-subtle/40 last:border-b-0',
+        selected && 'bg-subtle/40'
+      )}
+    >
+      {selected ? (
+        <CheckSquare
+          size={16}
+          strokeWidth={1.75}
+          className="shrink-0 text-foreground"
+        />
+      ) : (
+        <Square
+          size={16}
+          strokeWidth={1.75}
+          className="shrink-0 text-muted"
+        />
+      )}
+      <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+        {tx.merchant || tx.description}
+      </span>
+      <span className="text-xs text-muted">
+        {tx.category?.name ?? 'Uncategorized'}
+      </span>
+      <span
+        className={cn(
+          'shrink-0 text-sm tabular',
+          tx.type === 'income' && 'text-positive',
+          tx.type === 'expense' && 'text-foreground',
+          tx.type === 'transfer' && 'text-muted'
+        )}
+      >
+        {tx.type === 'income' ? '+' : tx.type === 'expense' ? '−' : ''}
+        {formatCurrency(Number(tx.amount))}
+      </span>
+    </button>
+  );
+}
+
+function BulkCategoryModal({
+  ids,
+  categories,
+  onClose,
+}: {
+  ids: string[];
+  categories: Pick<Category, 'id' | 'name' | 'color'>[];
+  onClose: (success: boolean) => void;
+}) {
+  const [categoryId, setCategoryId] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  function handleApply() {
+    setError(null);
+    startTransition(async () => {
+      const res = await bulkUpdateTransactions({
+        ids,
+        category_id: categoryId || null,
+      });
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      onClose(true);
+    });
+  }
+
+  return (
+    <Modal open={true} onClose={() => onClose(false)} title="Set category">
+      <div className="space-y-5">
+        <p className="text-sm text-muted">
+          Assign a category to {ids.length} transaction{ids.length === 1 ? '' : 's'}.
+        </p>
+
+        <div>
+          <label className="label mb-1.5 block">Category</label>
+          <select
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+            className="input"
+            autoFocus
+          >
+            <option value="">— Uncategorized —</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <p className="rounded-lg bg-subtle/40 p-3 text-xs text-muted">
+          ✨ A merchant rule will be saved for each unique merchant in your selection.
+          Future imports will auto-classify these merchants the same way.
+        </p>
+
+        {error && (
+          <div className="rounded-lg border border-negative/30 bg-negative/5 p-3 text-xs text-negative">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 border-t border-border pt-4">
+          <button
+            type="button"
+            onClick={() => onClose(false)}
+            disabled={isPending}
+            className="btn-ghost"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleApply}
+            disabled={isPending}
+            className="btn-primary"
+          >
+            {isPending && <Loader2 size={15} className="animate-spin" strokeWidth={2} />}
+            Apply
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function BulkTypeModal({
+  ids,
+  onClose,
+}: {
+  ids: string[];
+  onClose: (success: boolean) => void;
+}) {
+  const [type, setType] = useState<TransactionType>('expense');
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  function handleApply() {
+    setError(null);
+    startTransition(async () => {
+      const res = await bulkUpdateTransactions({ ids, type });
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      onClose(true);
+    });
+  }
+
+  const types: { value: TransactionType; label: string }[] = [
+    { value: 'expense', label: 'Expense' },
+    { value: 'income', label: 'Income' },
+    { value: 'transfer', label: 'Transfer' },
+  ];
+
+  return (
+    <Modal open={true} onClose={() => onClose(false)} title="Set type">
+      <div className="space-y-5">
+        <p className="text-sm text-muted">
+          Change the type of {ids.length} transaction{ids.length === 1 ? '' : 's'}.
+        </p>
+
+        <div className="flex gap-2">
+          {types.map((t) => (
+            <button
+              key={t.value}
+              type="button"
+              onClick={() => setType(t.value)}
+              className={cn(
+                'flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors',
+                type === t.value
+                  ? 'border-foreground bg-foreground text-surface'
+                  : 'border-border bg-surface text-muted hover:border-foreground/30'
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <p className="rounded-lg bg-subtle/40 p-3 text-xs text-muted">
+          ✨ A merchant rule will be saved for each unique merchant.
+        </p>
+
+        {error && (
+          <div className="rounded-lg border border-negative/30 bg-negative/5 p-3 text-xs text-negative">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 border-t border-border pt-4">
+          <button
+            type="button"
+            onClick={() => onClose(false)}
+            disabled={isPending}
+            className="btn-ghost"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleApply}
+            disabled={isPending}
+            className="btn-primary"
+          >
+            {isPending && <Loader2 size={15} className="animate-spin" strokeWidth={2} />}
+            Apply
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function BulkDeleteModal({
+  ids,
+  onClose,
+}: {
+  ids: string[];
+  onClose: (success: boolean) => void;
+}) {
+  const [confirmText, setConfirmText] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  const isConfirmed = confirmText === 'DELETE';
+
+  function handleDelete() {
+    setError(null);
+    startTransition(async () => {
+      const res = await bulkDeleteTransactions(ids);
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      onClose(true);
+    });
+  }
+
+  return (
+    <Modal
+      open={true}
+      onClose={() => onClose(false)}
+      title={`Delete ${ids.length} transaction${ids.length === 1 ? '' : 's'}?`}
+    >
+      <div className="space-y-5">
+        <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-warning">
+          <AlertTriangle size={14} strokeWidth={1.75} className="mt-0.5 shrink-0" />
+          <span>This cannot be undone.</span>
+        </div>
+
+        <div>
+          <label className="label mb-1.5 block">
+            Type <span className="font-mono text-foreground">DELETE</span> to confirm
+          </label>
+          <input
+            type="text"
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder="DELETE"
+            autoFocus
+            className="input font-mono"
+          />
+        </div>
+
+        {error && (
+          <div className="rounded-lg border border-negative/30 bg-negative/5 p-3 text-xs text-negative">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 border-t border-border pt-4">
+          <button
+            type="button"
+            onClick={() => onClose(false)}
+            disabled={isPending}
+            className="btn-ghost"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={!isConfirmed || isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-negative/30 bg-negative px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-negative/90 disabled:opacity-50"
+          >
+            {isPending ? (
+              <Loader2 size={15} className="animate-spin" strokeWidth={2} />
+            ) : (
+              <Trash2 size={15} strokeWidth={2} />
+            )}
+            Delete
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }

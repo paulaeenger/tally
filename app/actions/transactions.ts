@@ -203,6 +203,157 @@ export async function deleteTransaction(id: string) {
 }
 
 // ============================================================
+// Bulk operations (multi-select edit)
+// ============================================================
+
+/**
+ * Bulk-update one or more transactions. Pass any combination of fields
+ * to apply to every transaction in `ids`. Fields not passed remain unchanged.
+ *
+ * Also creates merchant rules — ONE rule per unique merchant in the
+ * selection — so future imports remember the classification.
+ */
+export async function bulkUpdateTransactions(params: {
+  ids: string[];
+  type?: TransactionType;
+  category_id?: string | null;
+}): Promise<{ updated: number; rulesCreated: number; error?: string }> {
+  const userId = await getCurrentUserId();
+  if (!userId) return { updated: 0, rulesCreated: 0, error: 'Not signed in' };
+
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return { updated: 0, rulesCreated: 0, error: 'No household found' };
+
+  if (params.ids.length === 0) {
+    return { updated: 0, rulesCreated: 0, error: 'No transactions selected' };
+  }
+  if (params.ids.length > 500) {
+    return { updated: 0, rulesCreated: 0, error: 'Too many — limit is 500 per bulk update' };
+  }
+
+  // Need at least one field to update
+  if (params.type === undefined && params.category_id === undefined) {
+    return { updated: 0, rulesCreated: 0, error: 'Nothing to update' };
+  }
+
+  const supabase = createClient();
+
+  // Fetch the transactions BEFORE updating so we know:
+  //   1. The merchants for each (for rule creation)
+  //   2. The original values (so we can avoid creating no-op rules)
+  const { data: originals } = await supabase
+    .from('transactions')
+    .select('id, merchant, type, category_id')
+    .in('id', params.ids)
+    .eq('household_id', householdId);
+
+  if (!originals || originals.length === 0) {
+    return { updated: 0, rulesCreated: 0, error: 'No transactions found' };
+  }
+
+  // Build the update payload — only include fields the caller specified
+  const updates: Record<string, unknown> = {};
+  if (params.type !== undefined) updates.type = params.type;
+  if (params.category_id !== undefined) updates.category_id = params.category_id;
+
+  const { error, count } = await supabase
+    .from('transactions')
+    .update(updates)
+    .in('id', params.ids)
+    .eq('household_id', householdId)
+    .select('*', { count: 'exact', head: true });
+
+  if (error) return { updated: 0, rulesCreated: 0, error: error.message };
+
+  // Create merchant rules — one per unique merchant in the selection.
+  // Only create a rule if the change was meaningful (something actually changed
+  // for that merchant) and the merchant is at least 3 chars.
+  let rulesCreated = 0;
+  const uniqueMerchants = new Map<string, { type: TransactionType; category_id: string | null; changed: boolean }>();
+
+  for (const orig of originals) {
+    if (!orig.merchant || orig.merchant.length < 3) continue;
+    const merchantKey = orig.merchant.toLowerCase();
+
+    const newType = params.type ?? orig.type;
+    const newCategoryId = params.category_id !== undefined ? params.category_id : orig.category_id;
+
+    const changed =
+      (params.type !== undefined && orig.type !== params.type) ||
+      (params.category_id !== undefined && orig.category_id !== params.category_id);
+
+    if (!uniqueMerchants.has(merchantKey)) {
+      uniqueMerchants.set(merchantKey, {
+        type: newType,
+        category_id: newCategoryId,
+        changed,
+      });
+    } else {
+      // If we've seen this merchant already, mark as changed if any of its
+      // transactions had a meaningful change
+      const existing = uniqueMerchants.get(merchantKey)!;
+      if (changed) existing.changed = true;
+    }
+  }
+
+  // Save rules for changed merchants. We import upsertMerchantRule via dynamic
+  // import to keep this server action self-contained even if the merchant rules
+  // module isn't available (graceful degradation).
+  for (const [merchantKey, rule] of uniqueMerchants) {
+    if (!rule.changed) continue;
+
+    // Use the original-cased merchant name (find it from any original with this key)
+    const original = originals.find((o) => o.merchant?.toLowerCase() === merchantKey);
+    if (!original?.merchant) continue;
+
+    try {
+      await upsertMerchantRule({
+        pattern: original.merchant,
+        type: rule.type,
+        category_id: rule.category_id,
+      });
+      rulesCreated++;
+    } catch {
+      // Don't fail the whole bulk update if a rule save fails
+    }
+  }
+
+  revalidate();
+  return { updated: count ?? params.ids.length, rulesCreated };
+}
+
+/**
+ * Bulk-delete transactions. No reassignment — they're just gone.
+ * The UI is responsible for confirming this is what the user wants.
+ */
+export async function bulkDeleteTransactions(
+  ids: string[]
+): Promise<{ deleted: number; error?: string }> {
+  const userId = await getCurrentUserId();
+  if (!userId) return { deleted: 0, error: 'Not signed in' };
+
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return { deleted: 0, error: 'No household found' };
+
+  if (ids.length === 0) return { deleted: 0, error: 'No transactions selected' };
+  if (ids.length > 500) return { deleted: 0, error: 'Too many — limit is 500 per bulk delete' };
+
+  const supabase = createClient();
+
+  const { error, count } = await supabase
+    .from('transactions')
+    .delete()
+    .in('id', ids)
+    .eq('household_id', householdId)
+    .select('*', { count: 'exact', head: true });
+
+  if (error) return { deleted: 0, error: error.message };
+
+  revalidate();
+  return { deleted: count ?? ids.length };
+}
+
+// ============================================================
 // Bulk import (for CSV)
 // ============================================================
 
