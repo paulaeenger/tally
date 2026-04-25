@@ -214,12 +214,12 @@ export interface ImportRow {
 
 export async function bulkImportTransactions(
   rows: ImportRow[]
-): Promise<{ imported: number; error?: string }> {
+): Promise<{ imported: number; skipped: number; error?: string }> {
   const userId = await getCurrentUserId();
-  if (!userId) return { imported: 0, error: 'Not signed in' };
-  if (rows.length === 0) return { imported: 0, error: 'No rows to import' };
+  if (!userId) return { imported: 0, skipped: 0, error: 'Not signed in' };
+  if (rows.length === 0) return { imported: 0, skipped: 0, error: 'No rows to import' };
   if (rows.length > 1000) {
-    return { imported: 0, error: 'Too many rows — limit is 1000 per import' };
+    return { imported: 0, skipped: 0, error: 'Too many rows — limit is 1000 per import' };
   }
 
   const supabase = createClient();
@@ -237,8 +237,11 @@ export async function bulkImportTransactions(
   }));
 
   const { error } = await supabase.from('transactions').insert(inserts);
-  if (error) return { imported: 0, error: error.message };
+  if (error) return { imported: 0, skipped: 0, error: error.message };
 
   revalidate();
-  return { imported: rows.length };
+  // Skipped count is 0 because the modal pre-filters duplicates before
+  // calling this function. If the database fingerprint constraint rejects
+  // any rows, the whole batch errors out rather than silent-skipping.
+  return { imported: rows.length, skipped: 0 };
 }
