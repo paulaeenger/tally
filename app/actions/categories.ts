@@ -203,36 +203,53 @@ export async function deleteCategory(params: {
     if (!dest) return { error: 'Destination category not found' };
   }
 
-  // Reassign transactions
+  // Reassign transactions. Count first, then update (Supabase doesn't allow
+  // count-select after update operations).
   const newCatId = params.reassignToId; // null is fine
-  const { count: txCount, error: txErr } = await supabase
+
+  const { count: txCount } = await supabase
+    .from('transactions')
+    .select('*', { count: 'exact', head: true })
+    .eq('household_id', householdId)
+    .eq('category_id', params.id);
+
+  const { error: txErr } = await supabase
     .from('transactions')
     .update({ category_id: newCatId })
     .eq('household_id', householdId)
-    .eq('category_id', params.id)
-    .select('*', { count: 'exact', head: true });
+    .eq('category_id', params.id);
 
   if (txErr) return { error: `Reassigning transactions: ${txErr.message}` };
 
-  // Reassign budgets (or delete them if no destination — orphan budgets are weird)
+  // Reassign budgets (or null them out if no destination)
   let budgetCount = 0;
   if (params.reassignToId) {
-    const { count, error: budErr } = await supabase
+    const { count } = await supabase
+      .from('budgets')
+      .select('*', { count: 'exact', head: true })
+      .eq('household_id', householdId)
+      .eq('category_id', params.id);
+
+    const { error: budErr } = await supabase
       .from('budgets')
       .update({ category_id: newCatId })
       .eq('household_id', householdId)
-      .eq('category_id', params.id)
-      .select('*', { count: 'exact', head: true });
+      .eq('category_id', params.id);
     if (budErr) return { error: `Reassigning budgets: ${budErr.message}` };
     budgetCount = count ?? 0;
   } else {
     // No reassignment target — null out category_id on budgets
-    const { count, error: budErr } = await supabase
+    const { count } = await supabase
+      .from('budgets')
+      .select('*', { count: 'exact', head: true })
+      .eq('household_id', householdId)
+      .eq('category_id', params.id);
+
+    const { error: budErr } = await supabase
       .from('budgets')
       .update({ category_id: null })
       .eq('household_id', householdId)
-      .eq('category_id', params.id)
-      .select('*', { count: 'exact', head: true });
+      .eq('category_id', params.id);
     if (budErr) return { error: `Updating budgets: ${budErr.message}` };
     budgetCount = count ?? 0;
   }
