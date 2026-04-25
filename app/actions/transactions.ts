@@ -256,14 +256,19 @@ export async function bulkUpdateTransactions(params: {
   if (params.type !== undefined) updates.type = params.type;
   if (params.category_id !== undefined) updates.category_id = params.category_id;
 
-  const { error, count } = await supabase
+  const { error } = await supabase
     .from('transactions')
     .update(updates)
     .in('id', params.ids)
-    .eq('household_id', householdId)
-    .select('*', { count: 'exact', head: true });
+    .eq('household_id', householdId);
 
   if (error) return { updated: 0, rulesCreated: 0, error: error.message };
+
+  // We trust the input array length as the updated count. RLS would have
+  // filtered out any IDs the user can't access; for those, the update is
+  // a no-op rather than an error, so this is a slight over-count in
+  // adversarial cases. For normal usage it's accurate.
+  const updatedCount = originals.length;
 
   // Create merchant rules — one per unique merchant in the selection.
   // Only create a rule if the change was meaningful (something actually changed
@@ -319,7 +324,7 @@ export async function bulkUpdateTransactions(params: {
   }
 
   revalidate();
-  return { updated: count ?? params.ids.length, rulesCreated };
+  return { updated: updatedCount, rulesCreated };
 }
 
 /**
@@ -340,17 +345,16 @@ export async function bulkDeleteTransactions(
 
   const supabase = createClient();
 
-  const { error, count } = await supabase
+  const { error } = await supabase
     .from('transactions')
     .delete()
     .in('id', ids)
-    .eq('household_id', householdId)
-    .select('*', { count: 'exact', head: true });
+    .eq('household_id', householdId);
 
   if (error) return { deleted: 0, error: error.message };
 
   revalidate();
-  return { deleted: count ?? ids.length };
+  return { deleted: ids.length };
 }
 
 // ============================================================
