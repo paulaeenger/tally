@@ -5,10 +5,12 @@ import { PageHeader } from '@/components/layout/page-header';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { HouseholdSection } from '@/components/ui/household-section';
 import { DangerZone } from '@/components/ui/danger-zone';
+import { CategoryManager } from '@/components/ui/category-manager';
 import {
   getProfile,
   getCurrentHousehold,
   getHouseholdMembers,
+  getCategories,
 } from '@/lib/data/queries';
 import { createClient } from '@/lib/supabase/server';
 import { signOut } from '@/app/auth/actions';
@@ -21,10 +23,11 @@ export default async function SettingsPage() {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const [profile, household, members] = await Promise.all([
+  const [profile, household, members, categories] = await Promise.all([
     getProfile(),
     getCurrentHousehold(),
     getHouseholdMembers(),
+    getCategories(),
   ]);
 
   return (
@@ -85,6 +88,9 @@ export default async function SettingsPage() {
           action={<button className="btn-ghost text-xs">Review</button>}
         />
       </section>
+
+      {/* Categories */}
+      <CategoryManager categories={categories} />
 
       {/* Session */}
       <section className="card p-6">
