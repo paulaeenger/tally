@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
-import { isSupabaseConfigured } from '@/lib/data/queries';
+import { isSupabaseConfigured, getCurrentHouseholdId } from '@/lib/data/queries';
 import { upsertMerchantRule } from '@/app/actions/merchant-rules';
 import type { TransactionType } from '@/lib/data/types';
 
@@ -33,6 +33,9 @@ export async function createTransaction(formData: FormData) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
 
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return { error: 'No household found' };
+
   const supabase = createClient();
 
   const type = formData.get('type') as TransactionType | null;
@@ -62,6 +65,7 @@ export async function createTransaction(formData: FormData) {
 
   const { error } = await supabase.from('transactions').insert({
     user_id: userId,
+    household_id: householdId,
     account_id: accountId,
     category_id: categoryId,
     type,
@@ -222,10 +226,14 @@ export async function bulkImportTransactions(
     return { imported: 0, skipped: 0, error: 'Too many rows — limit is 1000 per import' };
   }
 
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return { imported: 0, skipped: 0, error: 'No household found' };
+
   const supabase = createClient();
 
   const inserts = rows.map((r) => ({
     user_id: userId,
+    household_id: householdId,
     account_id: r.account_id,
     category_id: r.category_id,
     type: r.type,
