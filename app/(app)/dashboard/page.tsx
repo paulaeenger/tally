@@ -1,6 +1,4 @@
-// Target path: app/(app)/dashboard/page.tsx (REPLACE existing)
-
-import { startOfMonth, format, isSameMonth, subMonths } from 'date-fns';
+import { startOfMonth } from 'date-fns';
 import { PageHeader } from '@/components/layout/page-header';
 import { StatCard } from '@/components/ui/stat-card';
 import { CashflowChart } from '@/components/charts/cashflow-chart';
@@ -8,39 +6,21 @@ import { CategoryDonut } from '@/components/charts/category-donut';
 import { TransactionRow } from '@/components/ui/transaction-row';
 import { EmptyState } from '@/components/ui/empty-state';
 import { BudgetGlance } from '@/components/ui/budget-glance';
-import { MonthPicker, parseMonthParam } from '@/components/ui/month-picker';
-import {
-  getAccounts,
-  getTransactions,
-  getTransactionsSince,
-  getBudgets,
-  getGoals,
-} from '@/lib/data/queries';
+import { getAccounts, getTransactions, getBudgets, getGoals } from '@/lib/data/queries';
 import { buildCashflow, buildCategorySlices, sumByType } from '@/lib/utils/aggregations';
 import { formatCurrency, formatPercent } from '@/lib/utils/cn';
 import Link from 'next/link';
 import { ArrowRight, Wallet, ArrowLeftRight } from 'lucide-react';
 
+// This page renders server-side on each request and should not be cached
+// across requests — user data changes and should be reflected immediately.
 export const revalidate = 60;
 
-interface DashboardPageProps {
-  searchParams: { month?: string };
-}
-
-export default async function DashboardPage({ searchParams }: DashboardPageProps) {
-  // Determine which month to display
-  const selectedMonth = parseMonthParam(searchParams.month);
-  const today = startOfMonth(new Date());
-  const isCurrentMonth = isSameMonth(selectedMonth, today);
-
-  // Fetch data: enough to cover the selected month + 6 months for the cashflow chart
-  const fetchSince = startOfMonth(subMonths(today, 7));
-
-  const [accounts, recentTxs, allTxs, budgets, goals] = await Promise.all([
+export default async function DashboardPage() {
+  const [accounts, transactions, budgets, goals] = await Promise.all([
     getAccounts(),
-    getTransactions(50), // for the recent activity widget (always latest 50)
-    getTransactionsSince(fetchSince), // for cashflow + selected-month aggregations
-    getBudgets(selectedMonth),
+    getTransactions(50),
+    getBudgets(),
     getGoals(),
   ]);
 
@@ -49,14 +29,11 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
     .filter((a) => a.type === 'checking' || a.type === 'savings')
     .reduce((sum, a) => sum + Number(a.balance), 0);
 
-  // Stats for the SELECTED month (not always current)
-  const monthFlow = sumByType(allTxs, { for: selectedMonth });
+  const monthStart = startOfMonth(new Date());
+  const monthFlow = sumByType(transactions, monthStart);
 
-  // Cashflow always shows last 6 months relative to today (not selected)
-  const cashflow = buildCashflow(allTxs, 6);
-
-  // Category breakdown for the selected month
-  const { slices, total: monthSpend } = buildCategorySlices(allTxs, selectedMonth);
+  const cashflow = buildCashflow(transactions, 6);
+  const { slices, total: monthSpend } = buildCategorySlices(transactions);
 
   const budgetTotal = budgets.reduce((s, b) => s + Number(b.amount), 0);
   const budgetSpent = budgets.reduce((s, b) => s + Number(b.spent ?? 0), 0);
@@ -73,15 +50,16 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           })[0]
       : null;
 
-  const recent = recentTxs.slice(0, 6);
+  const recent = transactions.slice(0, 6);
 
   const hasMonthlyBudgets = budgets.some((b) => b.period === 'monthly');
   const hasTopGoal = !!(topGoal && Number(topGoal.target_amount) > 0);
   const hasRightColumn = hasMonthlyBudgets || hasTopGoal;
 
+  // Detect the "just signed up, no data yet" state for a friendlier first experience
   const isEmpty =
     accounts.length === 0 &&
-    recentTxs.length === 0 &&
+    transactions.length === 0 &&
     budgets.length === 0 &&
     goals.length === 0;
 
@@ -93,6 +71,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           title="Welcome to Tally"
           description="Let's get set up with your real information."
         />
+
         <div className="card p-8 sm:p-12">
           <div className="mx-auto max-w-lg text-center">
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-subtle text-muted">
@@ -101,6 +80,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             <h2 className="font-display text-2xl text-foreground">A fresh page.</h2>
             <p className="mt-2 text-sm text-muted">
               Start by adding an account — checking, savings, credit, or investment.
+              Once you have accounts, you can log transactions, set budgets, and track
+              goals.
             </p>
             <div className="mt-6 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <Link href="/accounts" className="btn-primary">
@@ -114,42 +95,36 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             </div>
           </div>
         </div>
+
+        <p className="text-center text-xs text-faint">
+          Your data stays private — visible only to you.
+        </p>
       </div>
     );
   }
 
-  const hasTransactions = allTxs.length > 0;
+  const hasTransactions = transactions.length > 0;
   const hasSpendSlices = slices.length > 0 && monthSpend > 0;
-
-  // Stat labels reflect the selected month
-  const monthLabel = isCurrentMonth ? 'MTD' : format(selectedMonth, 'MMM');
 
   return (
     <div className="stagger space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <PageHeader
-          eyebrow="Overview"
-          title="Your Tally"
-          description={
-            isCurrentMonth
-              ? 'A considered view of your money this month.'
-              : `Looking back at ${format(selectedMonth, 'MMMM yyyy')}.`
-          }
-        />
-        <MonthPicker current={selectedMonth} />
-      </div>
+      <PageHeader
+        eyebrow="Overview"
+        title="Your Tally"
+        description="A considered view of your money this month."
+      />
 
       {/* Stats row */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
         <StatCard label="Net Worth" value={formatCurrency(netWorth)} footnote="Across all accounts" />
         <StatCard label="Liquid" value={formatCurrency(liquid)} footnote="Checking & savings" />
         <StatCard
-          label={`Income ${monthLabel}`}
+          label="Income MTD"
           value={formatCurrency(monthFlow.income)}
           trend="positive"
         />
         <StatCard
-          label={`Spending ${monthLabel}`}
+          label="Spending MTD"
           value={formatCurrency(monthFlow.expense)}
           trend="negative"
           footnote={
@@ -193,7 +168,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
         <div className="card p-5 sm:p-6">
           <div className="mb-2">
             <h2 className="font-display text-lg text-foreground">By category</h2>
-            <p className="text-xs text-faint">{format(selectedMonth, 'MMMM yyyy')}</p>
+            <p className="text-xs text-faint">This month</p>
           </div>
           {hasSpendSlices ? (
             <>
@@ -212,7 +187,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             </>
           ) : (
             <div className="flex h-56 items-center justify-center text-center text-sm text-faint">
-              No spending in {format(selectedMonth, 'MMMM')} yet.
+              No spending this month yet.
             </div>
           )}
         </div>
