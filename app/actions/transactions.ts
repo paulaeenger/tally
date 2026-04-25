@@ -1,11 +1,14 @@
-// Target path in your repo: app/actions/transactions.ts (REPLACE existing file)
-
 'use server';
 
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
-import { isSupabaseConfigured, getCurrentHouseholdId } from '@/lib/data/queries';
+import { isSupabaseConfigured } from '@/lib/data/queries';
+import { upsertMerchantRule } from '@/app/actions/merchant-rules';
 import type { TransactionType } from '@/lib/data/types';
+
+// ============================================================
+// Helpers
+// ============================================================
 
 async function getCurrentUserId() {
   if (!isSupabaseConfigured()) return null;
@@ -25,12 +28,10 @@ function revalidate() {
 // ============================================================
 // Create
 // ============================================================
+
 export async function createTransaction(formData: FormData) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
-
-  const householdId = await getCurrentHouseholdId();
-  if (!householdId) return { error: 'No household found' };
 
   const supabase = createClient();
 
@@ -51,25 +52,25 @@ export async function createTransaction(formData: FormData) {
     return { error: 'Amount must be greater than zero' };
   }
 
+  // Use merchant as description (the display field is merchant; description
+  // stays populated for the legacy data model and CSV imports)
+  const description = merchant;
+
   const occurredAtIso = occurredAt
     ? new Date(occurredAt).toISOString()
     : new Date().toISOString();
 
-  const { error } = await supabase.from('transactions').upsert(
-    {
-      user_id: userId,
-      household_id: householdId,
-      account_id: accountId,
-      category_id: categoryId,
-      type,
-      amount,
-      description: merchant,
-      merchant,
-      notes: notes || null,
-      occurred_at: occurredAtIso,
-    },
-    { onConflict: 'user_id,fingerprint', ignoreDuplicates: true }
-  );
+  const { error } = await supabase.from('transactions').insert({
+    user_id: userId,
+    account_id: accountId,
+    category_id: categoryId,
+    type,
+    amount,
+    description,
+    merchant,
+    notes: notes || null,
+    occurred_at: occurredAtIso,
+  });
 
   if (error) return { error: error.message };
 
@@ -80,6 +81,7 @@ export async function createTransaction(formData: FormData) {
 // ============================================================
 // Update
 // ============================================================
+
 export async function updateTransaction(formData: FormData) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
@@ -110,8 +112,17 @@ export async function updateTransaction(formData: FormData) {
     ? new Date(occurredAt).toISOString()
     : new Date().toISOString();
 
-  // RLS handles authorization; we don't need a household_id check here
-  // because the UPDATE policy blocks rows outside the user's household.
+  // Fetch the original transaction so we can detect what changed.
+  // We use this to teach the merchant rules system from manual edits:
+  // when a user changes type or category, we save that as a rule so
+  // future imports of the same merchant auto-classify the same way.
+  const { data: original } = await supabase
+    .from('transactions')
+    .select('type, category_id, merchant')
+    .eq('id', id)
+    .eq('user_id', userId)
+    .maybeSingle();
+
   const { error } = await supabase
     .from('transactions')
     .update({
@@ -124,16 +135,42 @@ export async function updateTransaction(formData: FormData) {
       notes: notes || null,
       occurred_at: occurredAtIso,
     })
-    .eq('id', id);
+    .eq('id', id)
+    .eq('user_id', userId);
 
-  if (error) {
-    if (error.code === '23505' || error.message.includes('fingerprint')) {
-      return {
-        error:
-          'A matching transaction already exists — adjust the amount, date, or merchant to make it distinct.',
-      };
+  if (error) return { error: error.message };
+
+  // Learn from manual reclassifications. If the user changed type OR
+  // category, save a merchant rule so future imports remember this choice.
+  // Conditions for saving:
+  //   1. The original transaction was found (not null)
+  //   2. Either type or category_id actually changed
+  //   3. Merchant is at least 3 chars (avoids "X" or "ABC" creating noise)
+  //
+  // The rule is upserted on (household_id, pattern), so saving the same
+  // merchant repeatedly just updates the existing rule — no duplicates.
+  // If the user later changes their mind, the next manual edit overwrites
+  // the rule. The system is self-correcting.
+  if (original && merchant.length >= 3) {
+    const typeChanged = original.type !== type;
+    const categoryChanged = original.category_id !== categoryId;
+
+    if (typeChanged || categoryChanged) {
+      // We await this rather than fire-and-forget — Next.js server actions
+      // can terminate background Promises when the response returns. The
+      // upsert is fast (single SQL statement) so the latency cost is small.
+      // Errors are caught silently so a rule-save failure doesn't break
+      // the user's primary action of editing the transaction.
+      try {
+        await upsertMerchantRule({
+          pattern: merchant,
+          type,
+          category_id: categoryId,
+        });
+      } catch {
+        // Intentional: don't surface rule-save errors to the user.
+      }
     }
-    return { error: error.message };
   }
 
   revalidate();
@@ -143,13 +180,17 @@ export async function updateTransaction(formData: FormData) {
 // ============================================================
 // Delete
 // ============================================================
+
 export async function deleteTransaction(id: string) {
   const userId = await getCurrentUserId();
   if (!userId) return { error: 'Not signed in' };
 
   const supabase = createClient();
-  // RLS blocks deletion of rows outside user's household
-  const { error } = await supabase.from('transactions').delete().eq('id', id);
+  const { error } = await supabase
+    .from('transactions')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', userId);
 
   if (error) return { error: error.message };
 
@@ -158,38 +199,33 @@ export async function deleteTransaction(id: string) {
 }
 
 // ============================================================
-// Bulk import (CSV)
+// Bulk import (for CSV)
 // ============================================================
+
 export interface ImportRow {
-  occurred_at: string;
+  occurred_at: string; // ISO
   merchant: string;
-  amount: number;
+  amount: number; // positive
   type: TransactionType;
   account_id: string;
   category_id: string | null;
-  external_id?: string | null;
   notes?: string | null;
 }
 
 export async function bulkImportTransactions(
   rows: ImportRow[]
-): Promise<{ imported: number; skipped: number; error?: string }> {
+): Promise<{ imported: number; error?: string }> {
   const userId = await getCurrentUserId();
-  if (!userId) return { imported: 0, skipped: 0, error: 'Not signed in' };
-
-  const householdId = await getCurrentHouseholdId();
-  if (!householdId) return { imported: 0, skipped: 0, error: 'No household found' };
-
-  if (rows.length === 0) return { imported: 0, skipped: 0, error: 'No rows to import' };
+  if (!userId) return { imported: 0, error: 'Not signed in' };
+  if (rows.length === 0) return { imported: 0, error: 'No rows to import' };
   if (rows.length > 1000) {
-    return { imported: 0, skipped: 0, error: 'Too many rows — limit is 1000 per import' };
+    return { imported: 0, error: 'Too many rows — limit is 1000 per import' };
   }
 
   const supabase = createClient();
 
   const inserts = rows.map((r) => ({
     user_id: userId,
-    household_id: householdId,
     account_id: r.account_id,
     category_id: r.category_id,
     type: r.type,
@@ -198,40 +234,11 @@ export async function bulkImportTransactions(
     merchant: r.merchant,
     notes: r.notes ?? null,
     occurred_at: r.occurred_at,
-    external_id: r.external_id ?? null,
   }));
 
-  const withExternalId = inserts.filter((r) => r.external_id !== null);
-  const withoutExternalId = inserts.filter((r) => r.external_id === null);
-
-  let imported = 0;
-
-  if (withExternalId.length > 0) {
-    const { data, error } = await supabase
-      .from('transactions')
-      .upsert(withExternalId, {
-        onConflict: 'user_id,account_id,external_id',
-        ignoreDuplicates: true,
-      })
-      .select('id');
-    if (error) return { imported: 0, skipped: 0, error: error.message };
-    imported += data?.length ?? 0;
-  }
-
-  if (withoutExternalId.length > 0) {
-    const { data, error } = await supabase
-      .from('transactions')
-      .upsert(withoutExternalId, {
-        onConflict: 'user_id,fingerprint',
-        ignoreDuplicates: true,
-      })
-      .select('id');
-    if (error) return { imported: 0, skipped: 0, error: error.message };
-    imported += data?.length ?? 0;
-  }
-
-  const skipped = rows.length - imported;
+  const { error } = await supabase.from('transactions').insert(inserts);
+  if (error) return { imported: 0, error: error.message };
 
   revalidate();
-  return { imported, skipped };
+  return { imported: rows.length };
 }
