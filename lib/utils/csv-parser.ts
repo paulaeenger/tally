@@ -21,6 +21,10 @@ export interface ParsedRow {
   matchedRuleId?: string | null;
   // The category suggested by the matched rule (if any).
   suggestedCategoryId?: string | null;
+  // True when the row was auto-classified as a transfer based on merchant
+  // keywords (e.g., "Capital One Mobile Pmt"). The UI can show a hint
+  // letting the user know this was a guess.
+  autoDetectedTransfer?: boolean;
 }
 
 /**
@@ -356,6 +360,75 @@ function findMatchingRule(
 }
 
 // ----------------------------------------------------------------
+// Transfer detection
+// ----------------------------------------------------------------
+//
+// Detects transactions that are likely transfers between the user's own
+// accounts (credit card payments, loan payments, bank-to-bank transfers).
+// These look like expenses by amount sign but should not count as spending.
+//
+// Examples this catches:
+//   "Capital One Mobile Pmt"      -> contains 'pmt'
+//   "Synchrony Bank Payment"      -> contains 'payment'
+//   "Amficu Ck Webxfr Transfer"   -> contains 'transfer' AND 'webxfr'
+//   "Jenius Bank TRANSFER"        -> contains 'transfer'
+//   "Lightstream Loan Pmts"       -> contains 'loan' AND 'pmt'
+//   "GreenSky WEB PAY"            -> contains 'web pay'
+//   "Chase Card ePay"             -> contains 'epay'
+//   "Discover ACH Pmt"            -> contains 'ach' AND 'pmt'
+//
+// We use word-boundary matching for short tokens like 'pmt' and 'ach' to
+// avoid false positives (e.g., 'compatible' contains 'pat' as substring).
+//
+// IMPORTANT: This is a HEURISTIC. It may produce false positives. The
+// import preview UI shows the detected type and lets the user override
+// per row. Merchant rules (saved by the user) take priority over this
+// detection — once a user saves a rule, that's the source of truth.
+const TRANSFER_KEYWORDS = [
+  // Whole word patterns (with \b boundaries below)
+  'transfer',
+  'xfer',
+  'webxfr',
+  'payment',
+  'epay',
+  'autopay',
+  'ach',
+  'pmt',
+  'pmts',
+  'wire',
+  // Multi-word patterns that need looser matching
+  'web pay',
+  'mobile pmt',
+  'online pmt',
+  'card payment',
+  'credit card payment',
+  'loan payment',
+];
+
+function looksLikeTransfer(merchant: string): boolean {
+  if (!merchant) return false;
+  const normalized = ' ' + merchant.toLowerCase() + ' ';
+
+  for (const keyword of TRANSFER_KEYWORDS) {
+    if (keyword.includes(' ')) {
+      // Multi-word: use simple substring (the spaces in the keyword
+      // already provide some boundary protection)
+      if (normalized.includes(' ' + keyword + ' ') ||
+          normalized.includes(' ' + keyword)) {
+        return true;
+      }
+    } else {
+      // Single word: use word boundaries to avoid false positives
+      // (e.g., 'pmt' shouldn't match 'compatible')
+      const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+      if (regex.test(merchant)) return true;
+    }
+  }
+
+  return false;
+}
+
+// ----------------------------------------------------------------
 // Main parser
 // ----------------------------------------------------------------
 export function parseCSV(text: string, rules: MerchantRuleLike[] = []): ParseResult {
@@ -455,12 +528,23 @@ export function parseCSV(text: string, rules: MerchantRuleLike[] = []): ParseRes
     // Sign-based default classification
     const signBasedType: 'income' | 'expense' = amount < 0 ? 'expense' : 'income';
 
-    // Consult rules — if a rule matches, its type overrides the sign-based guess
-    // and its category is carried through as a suggestion.
+    // Consult rules — if a rule matches, its type overrides everything else.
+    // Rules are user-defined and take absolute priority.
     const matchedRule = findMatchingRule(merchant, rules);
-    const type: 'income' | 'expense' | 'transfer' = matchedRule
-      ? matchedRule.type
-      : signBasedType;
+
+    // If no rule, check for transfer keywords (auto-detection of payments,
+    // bank transfers, etc.). This catches the common "credit card payment
+    // double-counted as expense" problem before the sign-based fallback.
+    let type: 'income' | 'expense' | 'transfer';
+    let detectedAsTransfer = false;
+    if (matchedRule) {
+      type = matchedRule.type;
+    } else if (looksLikeTransfer(merchant)) {
+      type = 'transfer';
+      detectedAsTransfer = true;
+    } else {
+      type = signBasedType;
+    }
 
     rows.push({
       occurred_at: date.toISOString(),
@@ -472,6 +556,7 @@ export function parseCSV(text: string, rules: MerchantRuleLike[] = []): ParseRes
       raw: rawLine,
       matchedRuleId: matchedRule?.id ?? null,
       suggestedCategoryId: matchedRule?.category_id ?? null,
+      autoDetectedTransfer: detectedAsTransfer,
     });
   }
 
