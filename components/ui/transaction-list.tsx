@@ -26,7 +26,7 @@ import {
 import { cn, formatCurrency } from '@/lib/utils/cn';
 import type { Account, Category, Transaction, TransactionType } from '@/lib/data/types';
 
-type Filter = 'all' | 'income' | 'expense' | 'transfer';
+type Filter = 'all' | 'income' | 'expense' | 'transfer' | 'uncategorized';
 type BulkAction = 'category' | 'type' | 'delete' | null;
 
 interface Props {
@@ -48,7 +48,12 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return transactions.filter((tx) => {
-      if (filter !== 'all' && tx.type !== filter) return false;
+      // Filter by type, or by uncategorized status
+      if (filter === 'uncategorized') {
+        if (tx.category_id) return false;
+      } else if (filter !== 'all' && tx.type !== filter) {
+        return false;
+      }
       if (!q) return true;
       return (
         tx.description.toLowerCase().includes(q) ||
@@ -78,7 +83,11 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
     { key: 'expense', label: 'Expenses' },
     { key: 'income', label: 'Income' },
     { key: 'transfer', label: 'Transfers' },
+    { key: 'uncategorized', label: 'No category' },
   ];
+
+  // Count of uncategorized transactions for a small badge in the chip
+  const uncategorizedCount = transactions.filter((t) => !t.category_id).length;
 
   function toggleId(id: string) {
     setSelectedIds((prev) => {
@@ -131,13 +140,25 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
                 key={f.key}
                 onClick={() => setFilter(f.key)}
                 className={cn(
-                  'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                  'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
                   filter === f.key
                     ? 'bg-surface text-foreground shadow-subtle'
                     : 'text-muted hover:text-foreground'
                 )}
               >
                 {f.label}
+                {f.key === 'uncategorized' && uncategorizedCount > 0 && (
+                  <span
+                    className={cn(
+                      'rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
+                      filter === f.key
+                        ? 'bg-foreground/10 text-foreground'
+                        : 'bg-muted/20 text-muted'
+                    )}
+                  >
+                    {uncategorizedCount}
+                  </span>
+                )}
               </button>
             ))}
           </div>
