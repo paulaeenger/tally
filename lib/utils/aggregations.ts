@@ -1,19 +1,21 @@
-// Target path: lib/utils/aggregations.ts (REPLACE existing file)
+// Target path: lib/utils/aggregations.ts (REPLACE existing)
 
-import { format, parseISO, startOfMonth, subMonths, isSameMonth } from 'date-fns';
+import { format, parseISO, startOfMonth, endOfMonth, subMonths, isSameMonth } from 'date-fns';
 import type { Transaction } from '@/lib/data/types';
 import type { CashflowPoint } from '@/components/charts/cashflow-chart';
 import type { CategorySlice } from '@/components/charts/category-donut';
 
 /**
- * A transaction is a refund if its category is flagged as a refund category
- * (e.g., "Refunds", "Returns", "Reimbursements"). Refunds are expense-type
- * transactions that REDUCE net spending rather than counting as income.
+ * A transaction is a refund if its category is flagged as a refund.
  */
 function isRefund(tx: Transaction): boolean {
   return tx.type === 'expense' && tx.category?.is_refund === true;
 }
 
+/**
+ * 6-month cashflow chart. Always relative to "now" — this is the trend
+ * view, not a per-month view.
+ */
 export function buildCashflow(transactions: Transaction[], months = 6): CashflowPoint[] {
   const now = new Date();
   const result: CashflowPoint[] = [];
@@ -40,7 +42,6 @@ export function buildCashflow(transactions: Transaction[], months = 6): Cashflow
       }
     }
 
-    // Refunds reduce the expense bar. Net is income minus actual (net) spending.
     const netExpense = Math.max(0, expense - refund);
     result.push({
       date: label,
@@ -53,21 +54,23 @@ export function buildCashflow(transactions: Transaction[], months = 6): Cashflow
   return result;
 }
 
-export function buildCategorySlices(transactions: Transaction[]): {
-  slices: CategorySlice[];
-  total: number;
-} {
-  const now = new Date();
-  const monthStart = startOfMonth(now);
+/**
+ * Build category slices for a specific month. Defaults to current month.
+ */
+export function buildCategorySlices(
+  transactions: Transaction[],
+  forMonth?: Date
+): { slices: CategorySlice[]; total: number } {
+  const target = forMonth ?? new Date();
+  const monthStart = startOfMonth(target);
+  const monthEnd = endOfMonth(target);
   const totals = new Map<string, { value: number; color: string }>();
 
   for (const tx of transactions) {
     if (tx.type !== 'expense') continue;
-    // Refunds don't appear in the category donut — they'd show as inverse
-    // slices which is confusing. The "Spending MTD" number already reflects
-    // them at the top level.
     if (isRefund(tx)) continue;
-    if (parseISO(tx.occurred_at) < monthStart) continue;
+    const d = parseISO(tx.occurred_at);
+    if (d < monthStart || d > monthEnd) continue;
     const name = tx.category?.name ?? 'Uncategorized';
     const color = tx.category?.color ?? '#9c9891';
     const existing = totals.get(name);
@@ -87,19 +90,36 @@ export function buildCategorySlices(transactions: Transaction[]): {
 }
 
 /**
- * Returns income, net expense (expenses minus refunds), and refund totals
- * for a given date range. The dashboard uses `expense` as the "Spending MTD"
- * figure — which is net of refunds.
+ * Returns income, net expense (expenses minus refunds), refund, and net.
+ * If `forMonth` is provided, sums only transactions in that month.
+ * If `since` is provided (legacy single-arg form), sums everything after.
+ *
+ * Two argument forms supported for backwards compatibility:
+ *   sumByType(txs)              - all transactions
+ *   sumByType(txs, monthStart)  - transactions from monthStart onward
+ *   sumByType(txs, { for: d })  - transactions in the month of d
  */
 export function sumByType(
   transactions: Transaction[],
-  within?: Date
+  range?: Date | { for: Date }
 ): { income: number; expense: number; net: number; refund: number } {
+  let start: Date | null = null;
+  let end: Date | null = null;
+
+  if (range instanceof Date) {
+    start = range;
+  } else if (range && 'for' in range) {
+    start = startOfMonth(range.for);
+    end = endOfMonth(range.for);
+  }
+
   let income = 0;
   let expense = 0;
   let refund = 0;
   for (const tx of transactions) {
-    if (within && parseISO(tx.occurred_at) < within) continue;
+    const d = parseISO(tx.occurred_at);
+    if (start && d < start) continue;
+    if (end && d > end) continue;
     if (tx.type === 'income') {
       income += Number(tx.amount);
     } else if (tx.type === 'expense') {

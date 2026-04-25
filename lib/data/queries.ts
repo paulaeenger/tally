@@ -147,8 +147,35 @@ export async function getTransactions(limit = 100): Promise<Transaction[]> {
   return data as unknown as Transaction[];
 }
 
+/**
+ * Fetch transactions occurring in or after the given date.
+ * Used by the dashboard to show historical months.
+ *
+ * No upper bound, no limit — returns everything from `since` onward.
+ * Caller is responsible for filtering to a specific month if needed.
+ */
+export async function getTransactionsSince(since: Date): Promise<Transaction[]> {
+  const householdId = await getCurrentHouseholdId();
+  if (!householdId) return sampleTransactions;
+
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from('transactions')
+    .select(
+      `*,
+       account:accounts(id, name, type),
+       category:categories(id, name, color, is_refund)`
+    )
+    .eq('household_id', householdId)
+    .gte('occurred_at', since.toISOString())
+    .order('occurred_at', { ascending: false });
+
+  if (error || !data) return sampleTransactions;
+  return data as unknown as Transaction[];
+}
+
 // ---------- Budgets ----------
-export async function getBudgets(): Promise<Budget[]> {
+export async function getBudgets(forMonth?: Date): Promise<Budget[]> {
   const householdId = await getCurrentHouseholdId();
   if (!householdId) return sampleBudgets;
 
@@ -163,7 +190,8 @@ export async function getBudgets(): Promise<Budget[]> {
   const budgets = budgetsData as unknown as Budget[];
   if (budgets.length === 0) return budgets;
 
-  const now = new Date();
+  // Use the provided month for budget calculations if given, else "now"
+  const now = forMonth ?? new Date();
   const periodStartFor = (period: Budget['period']): Date => {
     const d = new Date(now);
     if (period === 'monthly') d.setDate(1);
@@ -173,6 +201,19 @@ export async function getBudgets(): Promise<Budget[]> {
       d.setDate(1);
     }
     d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
+  // For monthly budgets viewed historically, also bound the END date
+  const periodEndFor = (period: Budget['period'], start: Date): Date => {
+    const d = new Date(start);
+    if (period === 'monthly') {
+      d.setMonth(d.getMonth() + 1);
+    } else if (period === 'weekly') {
+      d.setDate(d.getDate() + 7);
+    } else if (period === 'yearly') {
+      d.setFullYear(d.getFullYear() + 1);
+    }
     return d;
   };
 
@@ -208,10 +249,12 @@ export async function getBudgets(): Promise<Budget[]> {
       continue;
     }
     const bStart = periodStarts[i];
+    const bEnd = periodEndFor(b.period, bStart);
     let spent = 0;
     for (const t of transactions) {
       if (t.category_id !== b.category_id) continue;
-      if (new Date(t.occurred_at) < bStart) continue;
+      const tDate = new Date(t.occurred_at);
+      if (tDate < bStart || tDate >= bEnd) continue;
       spent += Number(t.amount);
     }
     b.spent = spent;
