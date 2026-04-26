@@ -305,8 +305,32 @@ function md5(input: string): string {
 // ambiguity. Verified by local test: JS and Postgres produced
 // identical hashes for the same input.
 // ----------------------------------------------------------------
+// ----------------------------------------------------------------
+// Merchant normalization — strips bank export prefixes that vary
+// across CSV formats but describe the same merchant. Must match
+// the Postgres normalize_merchant() function exactly.
+// ----------------------------------------------------------------
+export function normalizeMerchant(input: string): string {
+  if (!input) return '';
+  let result = input.toLowerCase().trim();
+
+  // Strip common bank export prefixes (longest first)
+  result = result.replace(/^(electronic deposit|electronic withdrawal|electronic payment)\s+/i, '');
+  result = result.replace(/^(web|ppd|ach|eft|pos|atm|chk)\s+/i, '');
+
+  // Collapse multiple spaces
+  result = result.replace(/\s+/g, ' ').trim();
+
+  return result;
+}
+
+// ----------------------------------------------------------------
+// Compute fingerprint — content-based (no account_id).
+// Same merchant + amount + date + type = duplicate, regardless of
+// which account it's imported into.
+// Must match the Postgres trigger output exactly.
+// ----------------------------------------------------------------
 export function computeFingerprint(params: {
-  accountId: string;
   occurredAt: string;
   amount: number;
   merchant: string;
@@ -314,9 +338,9 @@ export function computeFingerprint(params: {
 }): string {
   const epochMs = new Date(params.occurredAt).getTime();
   const amountPart = params.amount.toFixed(2);
-  const merchantPart = (params.merchant || '').trim().toLowerCase();
+  const merchantPart = normalizeMerchant(params.merchant);
 
-  const canonical = `${params.accountId}|${epochMs}|${amountPart}|${merchantPart}|${params.type}`;
+  const canonical = `${epochMs}|${amountPart}|${merchantPart}|${params.type}`;
   return md5(canonical);
 }
 

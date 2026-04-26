@@ -82,6 +82,24 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
     })();
   }, [open]);
 
+  // Remember the last account used for CSV import. We read from localStorage
+  // when the modal opens and pre-select that account. The user can still
+  // override per-import, but the common case (always importing into the
+  // same account) just works without picking each time.
+  useEffect(() => {
+    if (!open) return;
+    if (accounts.length === 0) return;
+    try {
+      const stored = window.localStorage.getItem('tally:lastImportAccount');
+      if (stored && accounts.some((a) => a.id === stored)) {
+        setAccountId(stored);
+      }
+    } catch {
+      // localStorage might be unavailable (incognito, sandbox iframes, etc.).
+      // Fall back silently to the default already set in useState.
+    }
+  }, [open, accounts]);
+
   function reset() {
     setStage('upload');
     setFileName('');
@@ -106,6 +124,25 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
       return;
     }
     const text = await file.text();
+
+    // Auto-detect account from filename. Match the filename against account
+    // names (case-insensitive, ignoring non-alphanumerics on both sides).
+    // E.g., "wells_fargo_2026-04.csv" matches account "Wells Fargo Checking".
+    // If a match is found, override the currently-selected account.
+    const normalizedName = file.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const matchedAccount = accounts.find((a) => {
+      const acctName = a.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      // Match if either the account name appears in the filename, OR
+      // if a meaningful chunk of the account name matches. Avoid matching
+      // very short tokens like "x" or "1" by requiring 4+ chars.
+      if (acctName.length >= 4 && normalizedName.includes(acctName)) return true;
+      // Also try: any word in the account name appears in the filename
+      const words = a.name.toLowerCase().split(/\s+/).filter((w) => w.length >= 4);
+      return words.some((w) => normalizedName.includes(w));
+    });
+    if (matchedAccount && matchedAccount.id !== accountId) {
+      setAccountId(matchedAccount.id);
+    }
 
     // Ensure rules are loaded before parsing. If the user dropped a file
     // faster than the rules could load (rare but possible), fetch them now
@@ -158,7 +195,6 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
       const enriched: PreviewRow[] = parsed.map((r) => ({
         ...r,
         fingerprint: computeFingerprint({
-          accountId,
           occurredAt: r.occurred_at,
           amount: r.amount,
           merchant: r.merchant,
@@ -340,6 +376,15 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
         skipped: result.skipped,
         rulesSaved,
       });
+
+      // Remember this account for next time. Failure here is silent —
+      // localStorage might be unavailable in some browser contexts.
+      try {
+        window.localStorage.setItem('tally:lastImportAccount', accountId);
+      } catch {
+        // ignored
+      }
+
       setStage('done');
       router.refresh();
     });
