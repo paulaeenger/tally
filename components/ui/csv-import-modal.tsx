@@ -46,7 +46,16 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
   const [preview, setPreview] = useState<PreviewRow[]>([]);
   const [skipped, setSkipped] = useState<{ row: string; reason: string }[]>([]);
   const [detectedFormat, setDetectedFormat] = useState<string>('');
-  const [accountId, setAccountId] = useState<string>(accounts[0]?.id ?? '');
+  // Default to "Zions Checking" if it exists in the user's accounts.
+  // This is more useful than picking the first account alphabetically,
+  // since most imports go to the primary checking account anyway.
+  // localStorage memory (loaded in a useEffect below) overrides this if
+  // the user has imported into a different account previously.
+  const defaultAccountId =
+    accounts.find((a) => a.name.toLowerCase() === 'zions checking')?.id
+    ?? accounts[0]?.id
+    ?? '';
+  const [accountId, setAccountId] = useState<string>(defaultAccountId);
   const [defaultCategoryId, setDefaultCategoryId] = useState<string>('');
   const [excludedRows, setExcludedRows] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
