@@ -45,6 +45,7 @@ export interface Transaction {
   description: string;
   merchant: string | null;
   notes: string | null;
+  is_refund?: boolean;
   occurred_at: string;
   created_at: string;
   // joined fields

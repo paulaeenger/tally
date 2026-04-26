@@ -45,6 +45,7 @@ export async function createTransaction(formData: FormData) {
   const accountId = formData.get('account_id') as string | null;
   const categoryId = (formData.get('category_id') as string | null) || null;
   const occurredAt = formData.get('occurred_at') as string | null;
+  const isRefund = formData.get('is_refund') === 'true';
 
   if (!type) return { error: 'Type is required' };
   if (!accountId) return { error: 'Account is required' };
@@ -73,6 +74,7 @@ export async function createTransaction(formData: FormData) {
     description,
     merchant,
     notes: notes || null,
+    is_refund: type === 'expense' ? isRefund : false,
     occurred_at: occurredAtIso,
   });
 
@@ -102,6 +104,7 @@ export async function updateTransaction(formData: FormData) {
   const accountId = formData.get('account_id') as string | null;
   const categoryId = (formData.get('category_id') as string | null) || null;
   const occurredAt = formData.get('occurred_at') as string | null;
+  const isRefund = formData.get('is_refund') === 'true';
 
   if (!type) return { error: 'Type is required' };
   if (!accountId) return { error: 'Account is required' };
@@ -137,6 +140,7 @@ export async function updateTransaction(formData: FormData) {
       description: merchant,
       merchant,
       notes: notes || null,
+      is_refund: type === 'expense' ? isRefund : false,
       occurred_at: occurredAtIso,
     })
     .eq('id', id)
@@ -369,6 +373,7 @@ export interface ImportRow {
   account_id: string;
   category_id: string | null;
   notes?: string | null;
+  is_refund?: boolean;
 }
 
 export async function bulkImportTransactions(
@@ -396,6 +401,7 @@ export async function bulkImportTransactions(
     description: r.merchant,
     merchant: r.merchant,
     notes: r.notes ?? null,
+    is_refund: r.type === 'expense' && r.is_refund === true,
     occurred_at: r.occurred_at,
   }));
 

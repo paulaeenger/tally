@@ -6,10 +6,20 @@ import type { CashflowPoint } from '@/components/charts/cashflow-chart';
 import type { CategorySlice } from '@/components/charts/category-donut';
 
 /**
- * A transaction is a refund if its category is flagged as a refund.
+ * A transaction is a refund if either:
+ *   - The transaction itself is flagged is_refund=true (preferred — newer
+ *     mechanism that attributes the refund to its actual category)
+ *   - Its category is a refund-category (legacy — separate Refunds bucket)
+ *
+ * Both are honored for backward compatibility. The legacy "Refunds category"
+ * still works for users who tagged refunds that way before per-transaction
+ * flags existed.
  */
 function isRefund(tx: Transaction): boolean {
-  return tx.type === 'expense' && tx.category?.is_refund === true;
+  if (tx.type !== 'expense') return false;
+  if (tx.is_refund === true) return true;
+  if (tx.category?.is_refund === true) return true;
+  return false;
 }
 
 /**
@@ -56,6 +66,14 @@ export function buildCashflow(transactions: Transaction[], months = 6): Cashflow
 
 /**
  * Build category slices for a specific month. Defaults to current month.
+ *
+ * Refund handling:
+ *   - Refunds with category.is_refund=true (legacy "Refunds" category) are
+ *     excluded entirely — they have their own bucket.
+ *   - Refunds with tx.is_refund=true SUBTRACT from their category's total.
+ *     E.g., $100 Walmart (Groceries) - $20 refund (Groceries, refund) = $80.
+ *   - If a category total goes negative (refunds exceed spending), the slice
+ *     is omitted (negative slices in a donut chart are nonsensical).
  */
 export function buildCategorySlices(
   transactions: Transaction[],
@@ -68,21 +86,34 @@ export function buildCategorySlices(
 
   for (const tx of transactions) {
     if (tx.type !== 'expense') continue;
-    if (isRefund(tx)) continue;
+    // Skip the legacy "Refunds category" approach — those refunds don't
+    // belong to a real spending category and would just be a confusing
+    // negative slice.
+    if (tx.category?.is_refund === true) continue;
     const d = parseISO(tx.occurred_at);
     if (d < monthStart || d > monthEnd) continue;
+
     const name = tx.category?.name ?? 'Uncategorized';
     const color = tx.category?.color ?? '#9c9891';
+    const amount = Number(tx.amount);
+
+    // If this expense is flagged as a refund, subtract from the category
+    // total instead of adding. This is the per-transaction refund mechanism.
+    const delta = tx.is_refund === true ? -amount : amount;
+
     const existing = totals.get(name);
     if (existing) {
-      existing.value += Number(tx.amount);
+      existing.value += delta;
     } else {
-      totals.set(name, { value: Number(tx.amount), color });
+      totals.set(name, { value: delta, color });
     }
   }
 
   const slices = Array.from(totals.entries())
     .map(([name, { value, color }]) => ({ name, value, color }))
+    // Drop categories where refunds exceeded spending — negative slices
+    // don't make sense in a pie chart
+    .filter((s) => s.value > 0)
     .sort((a, b) => b.value - a.value);
 
   const total = slices.reduce((sum, s) => sum + s.value, 0);

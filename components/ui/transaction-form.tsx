@@ -227,6 +227,29 @@ export function TransactionForm({
           </select>
         </div>
 
+        {/* Refund toggle — only meaningful for Expense type. When checked,
+            this transaction reduces spending in its category instead of
+            adding to it. Useful for returns, reimbursements, etc. */}
+        {type === 'expense' && (
+          <div className="flex items-start gap-2 rounded-lg border border-border bg-subtle/40 p-3">
+            <input
+              type="checkbox"
+              id="is_refund"
+              name="is_refund"
+              value="true"
+              defaultChecked={editing?.is_refund ?? false}
+              className="mt-0.5"
+            />
+            <label htmlFor="is_refund" className="text-sm text-foreground">
+              <span className="font-medium">This is a refund</span>
+              <span className="block text-xs text-muted">
+                Reduces spending in the selected category instead of adding to it.
+                Useful for returns and reimbursements.
+              </span>
+            </label>
+          </div>
+        )}
+
         {/* Date */}
         <div>
           <label htmlFor="occurred_at" className="label mb-1.5 block">
