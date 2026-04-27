@@ -18,9 +18,18 @@ export default async function BudgetsPage() {
     color: c.color,
   }));
 
-  // Split into monthly and yearly for separate display sections
-  const monthly = budgets.filter((b) => b.period === 'monthly' || b.period === 'weekly');
-  const yearly = budgets.filter((b) => b.period === 'yearly');
+  // Split into monthly and yearly for separate display sections.
+  // Sorted alphabetically within each group for easy scanning — earlier we
+  // sorted by amount spent, but alphabetical is more predictable and lets
+  // users quickly find a specific budget by name.
+  const monthly = budgets
+    .filter((b) => b.period === 'monthly' || b.period === 'weekly')
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const yearly = budgets
+    .filter((b) => b.period === 'yearly')
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   const totalBudget = monthly.reduce((s, b) => s + Number(b.amount), 0);
   const totalSpent = monthly.reduce((s, b) => s + Number(b.spent ?? 0), 0);
