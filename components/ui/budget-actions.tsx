@@ -92,10 +92,10 @@ export function EditableBudgetCard({
             e.preventDefault();
             setOpen(true);
           }}
-          className="absolute top-3 right-3 z-10 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-subtle hover:text-foreground transition-colors"
+          className="absolute bottom-3 right-3 z-10 inline-flex h-8 w-8 items-center justify-center rounded-md text-faint hover:bg-subtle hover:text-foreground transition-colors"
           aria-label="Edit budget"
         >
-          <Pencil size={14} strokeWidth={1.75} />
+          <Pencil size={13} strokeWidth={1.75} />
         </button>
       </div>
       <BudgetForm
