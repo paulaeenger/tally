@@ -36,28 +36,25 @@ export function buildCashflow(transactions: Transaction[], months = 6): Cashflow
 
     let income = 0;
     let expense = 0;
-    let refund = 0;
 
     for (const tx of transactions) {
       const d = parseISO(tx.occurred_at);
       if (!isSameMonth(d, monthStart)) continue;
       if (tx.type === 'income') {
         income += Number(tx.amount);
-      } else if (tx.type === 'expense') {
-        if (isRefund(tx)) {
-          refund += Number(tx.amount);
-        } else {
-          expense += Number(tx.amount);
-        }
+      } else if (tx.type === 'expense' && !isRefund(tx)) {
+        // Skip refund-flagged expenses — they don't represent spending
+        expense += Number(tx.amount);
       }
     }
 
-    const netExpense = Math.max(0, expense - refund);
+    // `expense` already excludes refund-flagged transactions. Don't
+    // subtract `refund` again — that would double-count.
     result.push({
       date: label,
       income,
-      expense: netExpense,
-      net: income - netExpense,
+      expense,
+      net: income - expense,
     });
   }
 
@@ -161,11 +158,14 @@ export function sumByType(
       }
     }
   }
-  const netExpense = Math.max(0, expense - refund);
+  // `expense` already excludes refund-flagged transactions (we only add to
+  // expense when isRefund is false). So `expense` IS already the net
+  // out-of-pocket spending for the period. Don't subtract refund again —
+  // that would double-count.
   return {
     income,
-    expense: netExpense,
-    net: income - netExpense,
+    expense,
+    net: income - expense,
     refund,
   };
 }

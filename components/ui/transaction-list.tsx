@@ -108,38 +108,68 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
 
   // Tab-aware total. The label and which transactions to sum changes
   // based on the active filter.
+  //
+  // Behavior:
+  //  - When viewing without explicit date filter (no budget drill-in),
+  //    totals are limited to the current month so they match the dashboard
+  //    "MTD" stats. Otherwise comparing the two would be confusing.
+  //  - When viewing via budget click (URL has from/to dates), the totals
+  //    respect that range — we just sum what's filtered.
+  //  - Refund-flagged expenses are excluded from spending totals (they're
+  //    not actually money spent).
   const tabTotal = useMemo(() => {
+    // If no URL date filter, restrict to current month for consistency with dashboard
+    const hasUrlDateFilter = !!(urlFromDate || urlToDate);
+    const monthStart = !hasUrlDateFilter
+      ? new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10)
+      : null;
+
+    const inRange = (tx: Transaction) => {
+      if (!monthStart) return true;
+      return tx.occurred_at.slice(0, 10) >= monthStart;
+    };
+
+    const isRefundTx = (tx: Transaction) =>
+      tx.type === 'expense' && (tx.is_refund === true || tx.category?.is_refund === true);
+
     if (filter === 'expense' || filter === 'uncategorized') {
       return filtered
-        .filter((t) => t.type === 'expense')
+        .filter((t) => t.type === 'expense' && !isRefundTx(t) && inRange(t))
         .reduce((s, t) => s + Number(t.amount), 0);
     }
     if (filter === 'income') {
       return filtered
-        .filter((t) => t.type === 'income')
+        .filter((t) => t.type === 'income' && inRange(t))
         .reduce((s, t) => s + Number(t.amount), 0);
     }
     if (filter === 'transfer') {
       return filtered
-        .filter((t) => t.type === 'transfer')
+        .filter((t) => t.type === 'transfer' && inRange(t))
         .reduce((s, t) => s + Number(t.amount), 0);
     }
-    // 'all' tab: net flow (income - expenses)
+    // 'all' tab: net flow (income − non-refund expenses)
     let income = 0;
     let expense = 0;
     for (const t of filtered) {
+      if (!inRange(t)) continue;
       if (t.type === 'income') income += Number(t.amount);
-      else if (t.type === 'expense') expense += Number(t.amount);
+      else if (t.type === 'expense' && !isRefundTx(t)) expense += Number(t.amount);
     }
     return income - expense;
-  }, [filtered, filter]);
+  }, [filtered, filter, urlFromDate, urlToDate]);
+
+  // The total label hints at the date range when it's restricted to current month
+  const isCurrentMonthOnly = !urlFromDate && !urlToDate;
+  const monthLabel = isCurrentMonthOnly
+    ? new Date().toLocaleString('en-US', { month: 'short' })
+    : '';
 
   const tabTotalLabel =
-    filter === 'expense' ? 'Total spent'
-    : filter === 'income' ? 'Total earned'
-    : filter === 'transfer' ? 'Total transferred'
-    : filter === 'uncategorized' ? 'Total spent'
-    : 'Net flow'; // 'all'
+    filter === 'expense' ? `Spent${monthLabel ? ' (' + monthLabel + ')' : ''}`
+    : filter === 'income' ? `Earned${monthLabel ? ' (' + monthLabel + ')' : ''}`
+    : filter === 'transfer' ? `Transferred${monthLabel ? ' (' + monthLabel + ')' : ''}`
+    : filter === 'uncategorized' ? `Spent${monthLabel ? ' (' + monthLabel + ')' : ''}`
+    : `Net flow${monthLabel ? ' (' + monthLabel + ')' : ''}`; // 'all'
 
   const filters: { key: Filter; label: string }[] = [
     { key: 'all', label: 'All' },
