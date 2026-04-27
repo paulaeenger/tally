@@ -1,4 +1,4 @@
-import { startOfMonth } from 'date-fns';
+import { startOfMonth, subMonths } from 'date-fns';
 import { PageHeader } from '@/components/layout/page-header';
 import { StatCard } from '@/components/ui/stat-card';
 import { CashflowChart } from '@/components/charts/cashflow-chart';
@@ -6,7 +6,7 @@ import { CategoryDonut } from '@/components/charts/category-donut';
 import { TransactionRow } from '@/components/ui/transaction-row';
 import { EmptyState } from '@/components/ui/empty-state';
 import { BudgetGlance } from '@/components/ui/budget-glance';
-import { getAccounts, getTransactions, getBudgets, getGoals } from '@/lib/data/queries';
+import { getAccounts, getTransactions, getTransactionsSince, getBudgets, getGoals } from '@/lib/data/queries';
 import { buildCashflow, buildCategorySlices, sumByType } from '@/lib/utils/aggregations';
 import { formatCurrency, formatPercent } from '@/lib/utils/cn';
 import Link from 'next/link';
@@ -17,9 +17,15 @@ import { ArrowRight, Wallet, ArrowLeftRight } from 'lucide-react';
 export const revalidate = 60;
 
 export default async function DashboardPage() {
-  const [accounts, transactions, budgets, goals] = await Promise.all([
+  // Fetch enough history for the cashflow chart (6 months) AND for accurate
+  // month-to-date math. The "recent activity" widget gets a separate, smaller
+  // fetch since it only shows the latest 6 transactions.
+  const sixMonthsAgo = startOfMonth(subMonths(new Date(), 6));
+
+  const [accounts, recentTxs, allTxs, budgets, goals] = await Promise.all([
     getAccounts(),
-    getTransactions(50),
+    getTransactions(50),                    // for "Recent activity" widget
+    getTransactionsSince(sixMonthsAgo),     // for math (income/expense/cashflow/category)
     getBudgets(),
     getGoals(),
   ]);
@@ -30,10 +36,10 @@ export default async function DashboardPage() {
     .reduce((sum, a) => sum + Number(a.balance), 0);
 
   const monthStart = startOfMonth(new Date());
-  const monthFlow = sumByType(transactions, monthStart);
+  const monthFlow = sumByType(allTxs, monthStart);
 
-  const cashflow = buildCashflow(transactions, 6);
-  const { slices, total: monthSpend } = buildCategorySlices(transactions);
+  const cashflow = buildCashflow(allTxs, 6);
+  const { slices, total: monthSpend } = buildCategorySlices(allTxs);
 
   const budgetTotal = budgets.reduce((s, b) => s + Number(b.amount), 0);
   const budgetSpent = budgets.reduce((s, b) => s + Number(b.spent ?? 0), 0);
@@ -50,7 +56,7 @@ export default async function DashboardPage() {
           })[0]
       : null;
 
-  const recent = transactions.slice(0, 6);
+  const recent = recentTxs.slice(0, 6);
 
   const hasMonthlyBudgets = budgets.some((b) => b.period === 'monthly');
   const hasTopGoal = !!(topGoal && Number(topGoal.target_amount) > 0);
@@ -59,7 +65,7 @@ export default async function DashboardPage() {
   // Detect the "just signed up, no data yet" state for a friendlier first experience
   const isEmpty =
     accounts.length === 0 &&
-    transactions.length === 0 &&
+    recentTxs.length === 0 &&
     budgets.length === 0 &&
     goals.length === 0;
 
@@ -103,7 +109,7 @@ export default async function DashboardPage() {
     );
   }
 
-  const hasTransactions = transactions.length > 0;
+  const hasTransactions = allTxs.length > 0;
   const hasSpendSlices = slices.length > 0 && monthSpend > 0;
 
   return (

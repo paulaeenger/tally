@@ -37,12 +37,16 @@ export function CategoryDonut({ data, total }: CategoryDonutProps) {
           </Pie>
           <Tooltip
             contentStyle={{
-              background: 'rgb(var(--elevated))',
+              background: 'rgb(var(--surface))',
               border: '1px solid rgb(var(--border))',
               borderRadius: 8,
               fontSize: 12,
               padding: '8px 12px',
+              color: 'rgb(var(--foreground))',
+              boxShadow: '0 4px 16px rgba(0, 0, 0, 0.5)',
             }}
+            itemStyle={{ color: 'rgb(var(--foreground))' }}
+            labelStyle={{ color: 'rgb(var(--muted))' }}
             formatter={(v: number) => formatCurrency(v)}
           />
         </PieChart>
