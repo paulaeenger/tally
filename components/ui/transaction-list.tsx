@@ -2,9 +2,9 @@
 
 'use client';
 
-import { useMemo, useState, useTransition } from 'react';
+import { useMemo, useState, useTransition, useEffect } from 'react';
 import { format, parseISO } from 'date-fns';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Search,
   CheckSquare,
@@ -37,6 +37,28 @@ interface Props {
 
 export function TransactionList({ transactions, accounts, categories }: Props) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // URL-driven filters from clicking into a budget. These are sticky to the
+  // URL — refresh-safe and shareable. The user can clear them via the
+  // "Clear filter" pill that appears when any are active.
+  const urlCategoryId = searchParams.get('category');
+  const urlFromDate = searchParams.get('from'); // YYYY-MM-DD
+  const urlToDate = searchParams.get('to');     // YYYY-MM-DD
+
+  // Resolve the category name for the breadcrumb pill (if present)
+  const urlCategoryName = useMemo(() => {
+    if (!urlCategoryId) return null;
+    const cat = categories.find((c) => c.id === urlCategoryId);
+    return cat?.name ?? null;
+  }, [urlCategoryId, categories]);
+
+  const hasUrlFilter = !!(urlCategoryId || urlFromDate || urlToDate);
+
+  function clearUrlFilter() {
+    router.push('/transactions');
+  }
+
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
 
@@ -48,6 +70,16 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return transactions.filter((tx) => {
+      // URL-driven filters (from clicking into a budget) — applied first
+      if (urlCategoryId && tx.category_id !== urlCategoryId) return false;
+      if (urlFromDate) {
+        const txDate = tx.occurred_at.slice(0, 10); // YYYY-MM-DD
+        if (txDate < urlFromDate) return false;
+      }
+      if (urlToDate) {
+        const txDate = tx.occurred_at.slice(0, 10);
+        if (txDate > urlToDate) return false;
+      }
       // Filter by type, or by uncategorized status
       if (filter === 'uncategorized') {
         if (tx.category_id) return false;
@@ -61,7 +93,7 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
         (tx.category?.name.toLowerCase().includes(q) ?? false)
       );
     });
-  }, [transactions, query, filter]);
+  }, [transactions, query, filter, urlCategoryId, urlFromDate, urlToDate]);
 
   const groups = useMemo(() => {
     const map = new Map<string, Transaction[]>();
@@ -74,9 +106,40 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
     return Array.from(map.entries());
   }, [filtered]);
 
-  const totalSpent = filtered
-    .filter((t) => t.type === 'expense')
-    .reduce((s, t) => s + Number(t.amount), 0);
+  // Tab-aware total. The label and which transactions to sum changes
+  // based on the active filter.
+  const tabTotal = useMemo(() => {
+    if (filter === 'expense' || filter === 'uncategorized') {
+      return filtered
+        .filter((t) => t.type === 'expense')
+        .reduce((s, t) => s + Number(t.amount), 0);
+    }
+    if (filter === 'income') {
+      return filtered
+        .filter((t) => t.type === 'income')
+        .reduce((s, t) => s + Number(t.amount), 0);
+    }
+    if (filter === 'transfer') {
+      return filtered
+        .filter((t) => t.type === 'transfer')
+        .reduce((s, t) => s + Number(t.amount), 0);
+    }
+    // 'all' tab: net flow (income - expenses)
+    let income = 0;
+    let expense = 0;
+    for (const t of filtered) {
+      if (t.type === 'income') income += Number(t.amount);
+      else if (t.type === 'expense') expense += Number(t.amount);
+    }
+    return income - expense;
+  }, [filtered, filter]);
+
+  const tabTotalLabel =
+    filter === 'expense' ? 'Total spent'
+    : filter === 'income' ? 'Total earned'
+    : filter === 'transfer' ? 'Total transferred'
+    : filter === 'uncategorized' ? 'Total spent'
+    : 'Net flow'; // 'all'
 
   const filters: { key: Filter; label: string }[] = [
     { key: 'all', label: 'All' },
@@ -117,6 +180,30 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
 
   return (
     <div className="space-y-4">
+      {/* Active URL filter breadcrumb — shows when navigated from a budget click.
+          The user can dismiss to go back to the unfiltered transactions list. */}
+      {hasUrlFilter && (
+        <div className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 px-4 py-2.5 text-sm">
+          <span className="text-muted">Viewing:</span>
+          <span className="text-foreground font-medium">
+            {urlCategoryName ?? 'Filtered'}
+          </span>
+          {urlFromDate && urlToDate && (
+            <span className="text-muted">
+              · {format(parseISO(urlFromDate), 'MMM d')} – {format(parseISO(urlToDate), 'MMM d, yyyy')}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={clearUrlFilter}
+            className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted hover:bg-subtle hover:text-foreground"
+          >
+            <X size={12} strokeWidth={2} />
+            Clear
+          </button>
+        </div>
+      )}
+
       {/* Controls — search + filters */}
       <div className="card flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative flex-1 sm:max-w-sm">
@@ -236,7 +323,19 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
           {filtered.length} {filtered.length === 1 ? 'transaction' : 'transactions'}
         </span>
         <span className="tabular">
-          Total spent: <span className="text-foreground">{formatCurrency(totalSpent)}</span>
+          {tabTotalLabel}:{' '}
+          <span
+            className={cn(
+              'text-foreground',
+              // For "Net flow" on All tab, color based on sign
+              filter === 'all' && tabTotal > 0 && 'text-positive',
+              filter === 'all' && tabTotal < 0 && 'text-negative'
+            )}
+          >
+            {filter === 'all' && tabTotal > 0 && '+'}
+            {formatCurrency(Math.abs(tabTotal))}
+            {filter === 'all' && tabTotal < 0 && ' (out)'}
+          </span>
         </span>
       </div>
 

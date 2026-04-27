@@ -1,4 +1,6 @@
-import { PieChart } from 'lucide-react';
+import { PieChart, ArrowRight } from 'lucide-react';
+import Link from 'next/link';
+import { startOfMonth, endOfMonth, startOfWeek, endOfWeek, startOfYear, endOfYear, format } from 'date-fns';
 import { PageHeader } from '@/components/layout/page-header';
 import { EmptyState } from '@/components/ui/empty-state';
 import { AddBudgetButton, EditableBudgetCard } from '@/components/ui/budget-actions';
@@ -91,15 +93,27 @@ export default async function BudgetsPage() {
                 Monthly
               </h2>
               <div className="grid gap-3 sm:grid-cols-2">
-                {monthly.map((b) => (
-                  <EditableBudgetCard
-                    key={b.id}
-                    budget={b}
-                    categories={categoriesLite}
-                  >
-                    <BudgetCard budget={b} />
-                  </EditableBudgetCard>
-                ))}
+                {monthly.map((b) => {
+                  const url = budgetTxUrl(b);
+                  return (
+                    <div key={b.id} className="space-y-1.5">
+                      <EditableBudgetCard
+                        budget={b}
+                        categories={categoriesLite}
+                      >
+                        <BudgetCard budget={b} />
+                      </EditableBudgetCard>
+                      {url && (
+                        <Link
+                          href={url}
+                          className="inline-flex items-center gap-1 px-2 text-xs text-muted hover:text-foreground"
+                        >
+                          View transactions <ArrowRight size={12} />
+                        </Link>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </section>
           )}
@@ -111,15 +125,27 @@ export default async function BudgetsPage() {
                 Yearly
               </h2>
               <div className="grid gap-3 sm:grid-cols-2">
-                {yearly.map((b) => (
-                  <EditableBudgetCard
-                    key={b.id}
-                    budget={b}
-                    categories={categoriesLite}
-                  >
-                    <BudgetCard budget={b} />
-                  </EditableBudgetCard>
-                ))}
+                {yearly.map((b) => {
+                  const url = budgetTxUrl(b);
+                  return (
+                    <div key={b.id} className="space-y-1.5">
+                      <EditableBudgetCard
+                        budget={b}
+                        categories={categoriesLite}
+                      >
+                        <BudgetCard budget={b} />
+                      </EditableBudgetCard>
+                      {url && (
+                        <Link
+                          href={url}
+                          className="inline-flex items-center gap-1 px-2 text-xs text-muted hover:text-foreground"
+                        >
+                          View transactions <ArrowRight size={12} />
+                        </Link>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </section>
           )}
@@ -193,4 +219,30 @@ function BudgetCard({ budget: b }: { budget: any }) {
       </p>
     </div>
   );
+}
+
+// ----------------------------------------------------------------
+// Build URL for filtered transactions matching this budget
+// ----------------------------------------------------------------
+function budgetTxUrl(b: any): string | null {
+  if (!b.category_id) return null;
+  const now = new Date();
+  let from: Date;
+  let to: Date;
+  if (b.period === 'weekly') {
+    from = startOfWeek(now);
+    to = endOfWeek(now);
+  } else if (b.period === 'yearly') {
+    from = startOfYear(now);
+    to = endOfYear(now);
+  } else {
+    from = startOfMonth(now);
+    to = endOfMonth(now);
+  }
+  const params = new URLSearchParams({
+    category: b.category_id,
+    from: format(from, 'yyyy-MM-dd'),
+    to: format(to, 'yyyy-MM-dd'),
+  });
+  return `/transactions?${params.toString()}`;
 }

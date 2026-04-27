@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { ArrowRight, PieChart } from 'lucide-react';
+import { startOfMonth, endOfMonth, startOfWeek, endOfWeek, startOfYear, endOfYear, format } from 'date-fns';
 import type { Budget } from '@/lib/data/types';
 import { cn, formatCurrency, formatPercent } from '@/lib/utils/cn';
 
@@ -8,8 +9,40 @@ interface BudgetGlanceProps {
 }
 
 /**
+ * Build the URL for "view transactions in this budget's category and period".
+ * Budgets without a category_id link nowhere — they're configured wrong but
+ * shouldn't crash the UI.
+ */
+function buildBudgetTxUrl(b: Budget): string | null {
+  if (!b.category_id) return null;
+  const now = new Date();
+  let from: Date;
+  let to: Date;
+  if (b.period === 'weekly') {
+    from = startOfWeek(now);
+    to = endOfWeek(now);
+  } else if (b.period === 'yearly') {
+    from = startOfYear(now);
+    to = endOfYear(now);
+  } else {
+    // monthly (default)
+    from = startOfMonth(now);
+    to = endOfMonth(now);
+  }
+  const params = new URLSearchParams({
+    category: b.category_id,
+    from: format(from, 'yyyy-MM-dd'),
+    to: format(to, 'yyyy-MM-dd'),
+  });
+  return `/transactions?${params.toString()}`;
+}
+
+/**
  * Compact dashboard card that shows the top N monthly budgets by amount spent,
  * with inline progress bars. Links to the full Budgets page.
+ *
+ * Each individual budget row is also clickable — drills into the transactions
+ * page filtered to that category and the budget's current period.
  */
 export function BudgetGlance({ budgets }: BudgetGlanceProps) {
   // Only monthly budgets in the glance — yearly would skew the comparison
@@ -44,9 +77,12 @@ export function BudgetGlance({ budgets }: BudgetGlanceProps) {
           const pct = amount > 0 ? spent / amount : 0;
           const over = spent > amount;
           const status = over ? 'over' : pct > 0.85 ? 'warn' : 'ok';
+          const url = buildBudgetTxUrl(b);
 
-          return (
-            <div key={b.id}>
+          // Render content as a Link if we have a URL, else as a plain div.
+          // The hover affordance only appears on the linked variant.
+          const inner = (
+            <>
               <div className="flex items-baseline justify-between gap-3 text-sm">
                 <div className="flex min-w-0 items-center gap-2">
                   <span
@@ -77,8 +113,21 @@ export function BudgetGlance({ budgets }: BudgetGlanceProps) {
                   style={{ width: Math.min(100, pct * 100) + '%' }}
                 />
               </div>
-            </div>
+            </>
           );
+
+          if (url) {
+            return (
+              <Link
+                key={b.id}
+                href={url}
+                className="block rounded-md -mx-2 px-2 py-1 transition-colors hover:bg-subtle/40"
+              >
+                {inner}
+              </Link>
+            );
+          }
+          return <div key={b.id}>{inner}</div>;
         })}
       </div>
     </div>
