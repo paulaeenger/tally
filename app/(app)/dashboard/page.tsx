@@ -30,7 +30,6 @@ export default async function DashboardPage() {
     getGoals(),
   ]);
 
-  const netWorth = accounts.reduce((sum, a) => sum + Number(a.balance), 0);
   const liquid = accounts
     .filter((a) => a.type === 'checking' || a.type === 'savings')
     .reduce((sum, a) => sum + Number(a.balance), 0);
@@ -122,7 +121,12 @@ export default async function DashboardPage() {
 
       {/* Stats row */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
-        <StatCard label="Net Worth" value={formatCurrency(netWorth)} footnote="Across all accounts" />
+        <StatCard
+          label="Net MTD"
+          value={(monthFlow.net >= 0 ? '+' : '−') + formatCurrency(Math.abs(monthFlow.net))}
+          trend={monthFlow.net >= 0 ? 'positive' : 'negative'}
+          footnote={monthFlow.net >= 0 ? 'Saved this month' : 'Over by this much'}
+        />
         <StatCard label="Liquid" value={formatCurrency(liquid)} footnote="Checking & savings" />
         <StatCard
           label="Income MTD"
