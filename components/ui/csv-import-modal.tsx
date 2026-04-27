@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Upload, FileText, Loader2, AlertCircle, Check, AlertTriangle, Sparkles } from 'lucide-react';
 import { format } from 'date-fns';
 import { Modal } from '@/components/ui/modal';
-import { parseCSV, computeFingerprint, type ParsedRow, type MerchantRuleLike } from '@/lib/utils/csv-parser';
+import { parseCSV, computeFingerprint, findProbableMatch, type ParsedRow, type MerchantRuleLike, type DupCandidate } from '@/lib/utils/csv-parser';
 import { bulkImportTransactions } from '@/app/actions/transactions';
 import { checkForDuplicates } from '@/app/actions/transactions-check';
 import {
@@ -31,6 +31,9 @@ interface ImportModalProps {
 interface PreviewRow extends ParsedRow {
   isDuplicate: boolean;
   dupReason: 'external_id' | 'fingerprint' | null;
+  // Probable (not exact) duplicate detected via fuzzy matching
+  isProbableDuplicate: boolean;
+  probableMatchInfo: { merchant: string; date: string; amount: number } | null;
   // User can override the type and category in the review UI
   userType: TransactionType;
   userCategoryId: string | null;
@@ -211,6 +214,8 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
         }),
         isDuplicate: false,
         dupReason: null,
+        isProbableDuplicate: false,
+        probableMatchInfo: null,
         // User overrides default to whatever the parser chose (may be
         // rule-informed or sign-based)
         userType: r.type,
@@ -240,18 +245,49 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
 
         if (cancelled) return;
 
+        const candidates: DupCandidate[] = existing.candidates ?? [];
+
         const flagged: PreviewRow[] = enriched.map((r) => {
+          // Exact-match checks first (auto-skip)
           if (r.external_id && existing.externalIds.includes(r.external_id)) {
             return { ...r, isDuplicate: true, dupReason: 'external_id' };
           }
           if (existing.fingerprints.includes(r.fingerprint)) {
             return { ...r, isDuplicate: true, dupReason: 'fingerprint' };
           }
+
+          // Probable match — fuzzy match against existing transactions.
+          // Stays included by default; user can manually skip if they
+          // confirm it's a duplicate.
+          const match = findProbableMatch(
+            {
+              occurredAt: r.occurred_at,
+              amount: r.amount,
+              merchant: r.merchant,
+              type: r.type,
+            },
+            candidates
+          );
+          if (match) {
+            return {
+              ...r,
+              isProbableDuplicate: true,
+              probableMatchInfo: {
+                merchant: match.merchant ?? match.description ?? '(no merchant)',
+                date: match.occurred_at.slice(0, 10),
+                amount: match.amount,
+              },
+            };
+          }
+
           return r;
         });
 
         setPreview(flagged);
 
+        // Only auto-exclude EXACT duplicates. Probable duplicates stay
+        // included by default — user has to manually uncheck if they
+        // confirm it really is a dupe.
         const newExcluded = new Set<number>();
         flagged.forEach((r, i) => {
           if (r.isDuplicate) newExcluded.add(i);
@@ -595,7 +631,8 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
                       className={cn(
                         'border-b border-border/60 transition-opacity',
                         excluded && 'opacity-40',
-                        r.isDuplicate && 'bg-warning/5'
+                        r.isDuplicate && 'bg-warning/5',
+                        !r.isDuplicate && r.isProbableDuplicate && 'bg-amber-500/5'
                       )}
                     >
                       <td className="px-2 py-2">
@@ -632,6 +669,15 @@ export function CsvImportModal({ open, onClose, accounts, categories }: ImportMo
                             >
                               <AlertTriangle size={9} strokeWidth={2} />
                               Dup
+                            </span>
+                          )}
+                          {!r.isDuplicate && r.isProbableDuplicate && r.probableMatchInfo && (
+                            <span
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-500"
+                              title={`Possibly the same as: ${r.probableMatchInfo.merchant} on ${r.probableMatchInfo.date} for $${r.probableMatchInfo.amount.toFixed(2)}`}
+                            >
+                              <AlertTriangle size={9} strokeWidth={2} />
+                              Possible
                             </span>
                           )}
                         </div>

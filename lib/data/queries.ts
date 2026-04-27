@@ -291,21 +291,41 @@ export async function getProfile() {
 }
 
 // ---------- CSV import: duplicate detection ----------
+
+/**
+ * A lightweight transaction record returned for probable-match detection.
+ * Just enough fields for the client to run fuzzy comparison.
+ */
+export interface DupCandidate {
+  occurred_at: string;
+  amount: number;
+  merchant: string | null;
+  description: string | null;
+  type: 'income' | 'expense' | 'transfer';
+}
+
 export async function findExistingFingerprints(params: {
   accountId: string;
   fromDate: string;
   toDate: string;
   externalIds: string[];
   fingerprints: string[];
-}): Promise<{ externalIds: Set<string>; fingerprints: Set<string> }> {
+}): Promise<{
+  externalIds: Set<string>;
+  fingerprints: Set<string>;
+  candidates: DupCandidate[];
+}> {
   const householdId = await getCurrentHouseholdId();
-  if (!householdId) return { externalIds: new Set(), fingerprints: new Set() };
+  if (!householdId) {
+    return { externalIds: new Set(), fingerprints: new Set(), candidates: [] };
+  }
 
   const supabase = createClient();
 
   const result = {
     externalIds: new Set<string>(),
     fingerprints: new Set<string>(),
+    candidates: [] as DupCandidate[],
   };
 
   if (params.externalIds.length > 0) {
@@ -333,6 +353,35 @@ export async function findExistingFingerprints(params: {
     for (const row of data ?? []) {
       if (row.fingerprint) result.fingerprints.add(row.fingerprint);
     }
+  }
+
+  // Fetch candidates for probable-duplicate detection. We pull all
+  // transactions within the import date range plus a 60-day buffer
+  // on each side to catch pending/settled timing shifts and recurring
+  // payments imported from a previous month's statement.
+  // The client runs the actual fuzzy matching locally to keep this
+  // query simple.
+  const fromDate = new Date(params.fromDate);
+  fromDate.setDate(fromDate.getDate() - 60);
+  const toDate = new Date(params.toDate);
+  toDate.setDate(toDate.getDate() + 60);
+
+  const { data: candidatesData } = await supabase
+    .from('transactions')
+    .select('occurred_at, amount, merchant, description, type')
+    .eq('household_id', householdId)
+    .gte('occurred_at', fromDate.toISOString())
+    .lte('occurred_at', toDate.toISOString())
+    .limit(2000); // cap to avoid runaway queries; 2000 is generous
+
+  if (candidatesData) {
+    result.candidates = candidatesData.map((c) => ({
+      occurred_at: c.occurred_at,
+      amount: Number(c.amount),
+      merchant: c.merchant,
+      description: c.description,
+      type: c.type,
+    }));
   }
 
   return result;

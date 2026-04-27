@@ -345,6 +345,140 @@ export function computeFingerprint(params: {
 }
 
 // ----------------------------------------------------------------
+// Probable-duplicate detection
+//
+// Catches near-duplicates that the strict fingerprint check misses:
+//   - Same payment posted on different days (pending vs settled)
+//   - Same merchant with text variants ("Pmt" vs "Pymt")
+//   - Same merchant with different bank-statement framing
+//
+// Uses a combination of:
+//   - Same amount (exact)
+//   - Same type
+//   - Date within ±3 days
+//   - Similar merchant: substring containment OR Levenshtein distance ≤ 2
+// ----------------------------------------------------------------
+
+export interface DupCandidate {
+  occurred_at: string;
+  amount: number;
+  merchant: string | null;
+  description: string | null;
+  type: 'income' | 'expense' | 'transfer';
+}
+
+/**
+ * Compute Levenshtein distance between two strings.
+ * Used to catch typo-level merchant variants like "Pmt" vs "Pymt".
+ * Capped at maxDistance for efficiency — returns Infinity if exceeded.
+ */
+function levenshtein(a: string, b: string, maxDistance: number = 4): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > maxDistance) return Infinity;
+
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    let minInRow = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+      if (curr[j] < minInRow) minInRow = curr[j];
+    }
+    if (minInRow > maxDistance) return Infinity;
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+/**
+ * Test whether two merchant strings are "probably the same merchant".
+ * Conservative — meant to catch obvious variants, not aggressively merge.
+ */
+function merchantsAreSimilar(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const aNorm = normalizeMerchant(a);
+  const bNorm = normalizeMerchant(b);
+  if (!aNorm || !bNorm) return false;
+  if (aNorm === bNorm) return true;
+
+  // Substring match: one merchant fully contains the other (case-insensitive).
+  // Require the shorter one to be at least 6 chars to avoid spurious matches.
+  const shorter = aNorm.length < bNorm.length ? aNorm : bNorm;
+  const longer = aNorm.length < bNorm.length ? bNorm : aNorm;
+  if (shorter.length >= 6 && longer.includes(shorter)) return true;
+
+  // Word-overlap: if one merchant's distinctive words (4+ chars each)
+  // ALL appear in the other's text. This catches "RTP Paul Enger" vs
+  // "REAL TIME PAYMENT TO Paul Enger" — the words "paul" and "enger"
+  // appear in both, and they're the distinctive part.
+  // Require at least 2 distinctive words to overlap, to avoid matching
+  // by a single common word.
+  const wordsA = aNorm.split(/\s+/).filter((w) => w.length >= 4);
+  const wordsB = bNorm.split(/\s+/).filter((w) => w.length >= 4);
+  if (wordsA.length >= 2 && wordsB.length >= 2) {
+    const setA = new Set(wordsA);
+    const setB = new Set(wordsB);
+    let overlap = 0;
+    for (const w of setA) if (setB.has(w)) overlap++;
+    if (overlap >= 2) return true;
+  }
+
+  // Levenshtein for typo-level variants. Allow up to 2 character edits
+  // for short strings, 3 for longer.
+  const maxEdits = Math.max(aNorm.length, bNorm.length) >= 12 ? 3 : 2;
+  if (levenshtein(aNorm, bNorm, maxEdits) <= maxEdits) return true;
+
+  return false;
+}
+
+/**
+ * Find a probable-duplicate match for a candidate row.
+ * Returns the matching existing transaction, or null if no probable match.
+ *
+ * Match criteria (all must hold):
+ *   - Same amount (exact match)
+ *   - Same type
+ *   - Date within ±3 days
+ *   - Merchant is similar (per merchantsAreSimilar)
+ */
+export function findProbableMatch(
+  candidate: {
+    occurredAt: string;
+    amount: number;
+    merchant: string;
+    type: 'income' | 'expense' | 'transfer';
+  },
+  existing: DupCandidate[]
+): DupCandidate | null {
+  const candDate = new Date(candidate.occurredAt).getTime();
+  const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+  const candAmount = Math.abs(candidate.amount);
+
+  for (const ex of existing) {
+    if (ex.type !== candidate.type) continue;
+    if (Math.abs(Math.abs(ex.amount) - candAmount) > 0.001) continue;
+
+    const exDate = new Date(ex.occurred_at).getTime();
+    if (Math.abs(exDate - candDate) > threeDaysMs) continue;
+
+    const exMerchant = ex.merchant ?? ex.description ?? '';
+    if (!merchantsAreSimilar(candidate.merchant, exMerchant)) continue;
+
+    return ex;
+  }
+  return null;
+}
+
+// ----------------------------------------------------------------
 // External ID extraction
 // ----------------------------------------------------------------
 function findExternalIdColumn(headers: string[]): number {
