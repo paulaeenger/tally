@@ -1,5 +1,4 @@
-import { PieChart, ArrowRight } from 'lucide-react';
-import Link from 'next/link';
+import { PieChart } from 'lucide-react';
 import { startOfMonth, endOfMonth, startOfWeek, endOfWeek, startOfYear, endOfYear, format } from 'date-fns';
 import { PageHeader } from '@/components/layout/page-header';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -102,27 +101,16 @@ export default async function BudgetsPage() {
                 Monthly
               </h2>
               <div className="grid gap-3 sm:grid-cols-2">
-                {monthly.map((b) => {
-                  const url = budgetTxUrl(b);
-                  return (
-                    <div key={b.id} className="space-y-1.5">
-                      <EditableBudgetCard
-                        budget={b}
-                        categories={categoriesLite}
-                      >
-                        <BudgetCard budget={b} />
-                      </EditableBudgetCard>
-                      {url && (
-                        <Link
-                          href={url}
-                          className="inline-flex items-center gap-1 px-2 text-xs text-muted hover:text-foreground"
-                        >
-                          View transactions <ArrowRight size={12} />
-                        </Link>
-                      )}
-                    </div>
-                  );
-                })}
+                {monthly.map((b) => (
+                  <EditableBudgetCard
+                    key={b.id}
+                    budget={b}
+                    categories={categoriesLite}
+                    txUrl={budgetTxUrl(b)}
+                  >
+                    <BudgetCard budget={b} />
+                  </EditableBudgetCard>
+                ))}
               </div>
             </section>
           )}
@@ -134,27 +122,16 @@ export default async function BudgetsPage() {
                 Yearly
               </h2>
               <div className="grid gap-3 sm:grid-cols-2">
-                {yearly.map((b) => {
-                  const url = budgetTxUrl(b);
-                  return (
-                    <div key={b.id} className="space-y-1.5">
-                      <EditableBudgetCard
-                        budget={b}
-                        categories={categoriesLite}
-                      >
-                        <BudgetCard budget={b} />
-                      </EditableBudgetCard>
-                      {url && (
-                        <Link
-                          href={url}
-                          className="inline-flex items-center gap-1 px-2 text-xs text-muted hover:text-foreground"
-                        >
-                          View transactions <ArrowRight size={12} />
-                        </Link>
-                      )}
-                    </div>
-                  );
-                })}
+                {yearly.map((b) => (
+                  <EditableBudgetCard
+                    key={b.id}
+                    budget={b}
+                    categories={categoriesLite}
+                    txUrl={budgetTxUrl(b)}
+                  >
+                    <BudgetCard budget={b} />
+                  </EditableBudgetCard>
+                ))}
               </div>
             </section>
           )}
