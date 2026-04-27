@@ -220,34 +220,37 @@ export function TransactionList({ transactions, accounts, categories }: Props) {
             className="input pl-9"
           />
         </div>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 rounded-lg border border-border bg-subtle/60 p-1">
-            {filters.map((f) => (
-              <button
-                key={f.key}
-                onClick={() => setFilter(f.key)}
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
-                  filter === f.key
-                    ? 'bg-surface text-foreground shadow-subtle'
-                    : 'text-muted hover:text-foreground'
-                )}
-              >
-                {f.label}
-                {f.key === 'uncategorized' && uncategorizedCount > 0 && (
-                  <span
-                    className={cn(
-                      'rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
-                      filter === f.key
-                        ? 'bg-foreground/10 text-foreground'
-                        : 'bg-muted/20 text-muted'
-                    )}
-                  >
-                    {uncategorizedCount}
-                  </span>
-                )}
-              </button>
-            ))}
+        <div className="flex items-center gap-2 min-w-0">
+          {/* Filter chip group: scrolls horizontally on mobile when chips don't fit */}
+          <div className="flex-1 min-w-0 overflow-x-auto -mx-1 px-1 sm:flex-initial sm:overflow-visible sm:mx-0 sm:px-0">
+            <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-subtle/60 p-1 whitespace-nowrap">
+              {filters.map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => setFilter(f.key)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors shrink-0',
+                    filter === f.key
+                      ? 'bg-surface text-foreground shadow-subtle'
+                      : 'text-muted hover:text-foreground'
+                  )}
+                >
+                  {f.label}
+                  {f.key === 'uncategorized' && uncategorizedCount > 0 && (
+                    <span
+                      className={cn(
+                        'rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
+                        filter === f.key
+                          ? 'bg-foreground/10 text-foreground'
+                          : 'bg-muted/20 text-muted'
+                      )}
+                    >
+                      {uncategorizedCount}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
           {!selectionMode ? (
             <button
